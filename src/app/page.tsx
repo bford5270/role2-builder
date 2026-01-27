@@ -12,7 +12,7 @@ export default function SetupPage() {
   const [selectedMETs, setSelectedMETs] = useState<string[]>([]);
   const [expandedMET, setExpandedMET] = useState<string | null>(null);
 
-  // DATA FROM NAVMC 3500.84A 
+  [cite_start]// DATA FROM NAVMC 3500.84A [cite: 3, 4, 7-19]
   const MET_DATA = [
     { id: 'MET 1', name: 'Provide Task-Organized Forces', events: ['HSS-PLAN-7001', 'HSS-PLAN-6001'] },
     { id: 'MET 2', name: 'Conduct Casualty Treatment', events: ['HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-FRSS-4001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
@@ -102,7 +102,7 @@ export default function SetupPage() {
             <div className="grid grid-cols-2 gap-2">
               {FOOTPRINT.map(s => (
                 <label key={s} className="flex items-center space-x-2 p-2 bg-slate-50 rounded text-[10px] font-bold uppercase cursor-pointer hover:bg-emerald-50">
-                  <input type="checkbox" className="h-4 w-4" /> <span>{s}</span>
+                  <input type="checkbox" className="h-4 w-4 cursor-pointer" /> <span>{s}</span>
                 </label>
               ))}
             </div>
@@ -114,7 +114,7 @@ export default function SetupPage() {
               {SPECIALTIES.map(spec => (
                 <div key={spec} className="flex justify-between items-center bg-slate-50 p-2 rounded border border-slate-200">
                   <span className="text-[10px] font-black uppercase text-slate-700">{spec}</span>
-                  <input type="number" defaultValue={0} className="w-12 text-center border-2 border-slate-200 rounded font-black text-blue-900" />
+                  <input type="number" defaultValue={0} className="w-12 text-center border-2 border-slate-200 rounded font-black text-blue-900 outline-none" />
                 </div>
               ))}
             </div>
