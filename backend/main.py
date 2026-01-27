@@ -11,7 +11,7 @@ from io import BytesIO
 
 app = FastAPI()
 
-# --- DATABASE SETUP ---
+# --- DATABASE ENGINE ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -29,7 +29,6 @@ class Exercise(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- SECURITY & AI ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,23 +41,20 @@ api_key = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-1.5-pro')
 
-# --- ENDPOINTS ---
-
 @app.post("/generate-name")
 async def generate_name(data: dict):
     aor = data.get("aor", "General")
     unit = data.get("unitType", "Division")
-    prompt = f"Generate one unique USMC exercise name for a {unit} unit in a {aor} environment. Style: Aggressive/Medical. Avoid 'Crimson', 'Scalpel', 'Steel'. Seed: {random.random()}"
+    prompt = f"Generate one unique USMC exercise name. Unit: {unit}. Environment: {aor}. Style: Two words, aggressive. Avoid 'Crimson', 'Scalpel', 'Steel'. Random Seed: {random.random()}"
     response = model.generate_content(prompt)
     return {"name": response.text.strip()}
 
 @app.post("/generate-msel")
 async def generate_msel(data: dict):
-    # This structure is designed to be populated by the tactical waves next
     df = pd.DataFrame([
-        {"Time": "0800", "Inject": "Exercise Start", "Description": "All Role 2 sections (STP/FRSS/COC) online."},
-        {"Time": "1000", "Inject": "Casualty Wave 1", "Description": "Point of Injury arrivals; Triage initiated."},
-        {"Time": "1400", "Inject": "MASCAL Declared", "Description": "MCT 4.5.6 procedures activated."}
+        {"Time": "0800", "Inject": "Exercise Start", "Description": "All Role 2 sections (STP/FRSS) online."},
+        {"Time": "1000", "Inject": "Wave 1", "Description": "Arrival of WIA at Triage/Alpha."},
+        {"Time": "1400", "Inject": "MASCAL", "Description": "MCT 4.5.6 protocol activated."}
     ])
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -68,13 +64,11 @@ async def generate_msel(data: dict):
 
 @app.post("/generate-warno")
 async def generate_warno(data: dict):
-    prompt = f"Write a formal USMC Medical WARNO for {data.get('exerciseName')}. Focus METs: {data.get('selectedMETs')}. Environmental: {data.get('aor')}."
+    prompt = f"Draft a formal USMC Medical WARNO for {data.get('exerciseName')}. METs: {data.get('selectedMETs')}."
     response = model.generate_content(prompt)
-    
     db = SessionLocal()
     new_ex = Exercise(name=data.get('exerciseName'), details=data, warno=response.text)
     db.add(new_ex)
     db.commit()
     db.close()
-    
     return {"document": response.text}
