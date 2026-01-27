@@ -12,6 +12,7 @@ export default function SetupPage() {
   const [expandedMET, setExpandedMET] = useState<string | null>(null);
   const [expandedEvent, setExpandedEvent] = useState<string | null>(null);
 
+  // DATA FROM NAVMC 3500.84A [cite: 3, 4, 7-19, 21-179]
   const MET_DATA = [
     { 
       id: 'MET 1', name: 'Provide Task-Organized Forces', 
@@ -24,41 +25,40 @@ export default function SetupPage() {
       id: 'MET 2', name: 'Conduct Casualty Treatment', 
       events: [
         { id: 'HSS-MBN-6001', name: 'Establish resuscitative/surgical capabilities', pecls: ['Provide FRSS', 'Provide STP', 'Provide temp holding'] },
-        { id: 'HSS-AID-5601', name: 'Provide Aid Station Health Services Support', pecls: ['Triage', 'Treat', 'Stabilize', 'Casualty Reports', 'DNBI'] },
-        { id: 'HSS-STP-5001', name: 'Establish a resuscitative facility', pecls: ['Identify lift', 'Move to location', 'Employ tentage', 'Establish comms'] },
-        { id: 'HSS-SVCS-3507', name: 'Perform medical care', pecls: ['Triage', 'History/PE', 'ID injury', 'Render treatment', 'Document'] }
+        { id: 'HSS-AID-5601', name: 'Provide Aid Station HSS', pecls: ['Triage', 'Treat', 'Stabilize', 'Casualty Reports'] },
+        { id: 'HSS-STP-5001', name: 'Establish resuscitative facility', pecls: ['ID lift', 'Move to location', 'Employ tentage', 'Establish comms'] },
+        { id: 'HSS-SVCS-3507', name: 'Perform medical care', pecls: ['Triage', 'History/PE', 'ID injury', 'Render treatment'] }
       ] 
     },
     { 
       id: 'MET 3', name: 'Conduct Temporary Casualty Holding', 
       events: [
-        { id: 'HSS-SVCS-3502', name: 'Conduct temporary casualty holding', pecls: ['Assess casualty', 'Provide holding', 'Maintain accountability', 'Document treatment'] }
+        { id: 'HSS-SVCS-3502', name: 'Conduct temporary casualty holding', pecls: ['Assess casualty', 'Provide holding', 'Maintain accountability'] }
       ] 
     },
     { 
       id: 'MET 4', name: 'Conduct Casualty Evacuation', 
       events: [
-        { id: 'HSS-SVCS-3401', name: 'Conduct casualty evacuation', pecls: ['Submit request', 'Prepare casualty', 'Prepare documentation', 'Casualty turnover'] },
-        { id: 'HSS-PET-4701', name: 'Coordinate patient movement', pecls: ['Receive request', 'Determine means', 'Determine destination', 'Track movement'] }
+        { id: 'HSS-SVCS-3401', name: 'Conduct casualty evacuation', pecls: ['Submit request', 'Prepare casualty', 'Casualty turnover'] },
+        { id: 'HSS-PET-4701', name: 'Coordinate patient movement', pecls: ['Receive request', 'Determine means', 'Track movement'] }
       ] 
     },
     { 
       id: 'MET 5', name: 'Conduct Mass Casualty Operations', 
       events: [
-        { id: 'HSS-SVCS-3701', name: 'Perform mass casualty', pecls: ['Determine nature', 'Activate plan', 'Conduct triage', 'Emergency treatment', 'Evacuate'] }
+        { id: 'HSS-SVCS-3701', name: 'Perform mass casualty', pecls: ['Determine nature', 'Activate plan', 'Conduct triage', 'Evacuate'] }
       ] 
     },
     { 
       id: 'MET 6', name: 'Conduct and Provide Dental Services', 
       events: [
-        { id: 'HSS-DENT-3001', name: 'Provide dental services', pecls: ['Triage', 'History/PE', 'ID injury', 'Render care', 'Document'] },
-        { id: 'HSS-DENT-3002', name: 'Perform emergency dental treatment', pecls: ['Triage', 'History/PE', 'ID injury', 'Render care', 'Document'] }
+        { id: 'HSS-DENT-3001', name: 'Provide dental services', pecls: ['Triage', 'History/PE', 'ID injury', 'Render care'] }
       ] 
     },
     { 
       id: 'MET 7', name: 'Conduct Medical Regulating Services', 
       events: [
-        { id: 'HSS-OPS-6001', name: 'Provide command and control', pecls: ['Medical watch', 'Battle rhythm', 'Execute IM', 'Maintain COP'] }
+        { id: 'HSS-OPS-6001', name: 'Provide command and control', pecls: ['Medical watch', 'Battle rhythm', 'Execute IM'] }
       ] 
     }
   ];
@@ -81,15 +81,15 @@ export default function SetupPage() {
       });
       const data = await response.json();
       setExerciseName(data.name);
-    } catch (e) { setExerciseName("Operation Obsidian Shield"); }
+    } catch (e) { setExerciseName("Operation Steel Suture"); }
     setIsGenerating(false);
   };
 
   return (
     <div className="max-w-6xl mx-auto p-8 bg-slate-50 min-h-screen text-slate-900 font-sans">
       <header className="mb-10 border-b-8 border-blue-900 pb-4">
-        <h1 className="text-5xl font-black uppercase italic tracking-tighter">Role 2 Exercise Builder</h1>
-        <p className="text-blue-700 font-bold uppercase tracking-widest text-sm mt-2">1st Med Bn Mission Planner</p>
+        <h1 className="text-5xl font-black uppercase italic tracking-tighter text-blue-900">Role 2 Exercise Builder</h1>
+        <p className="font-bold uppercase tracking-widest text-sm mt-2 text-slate-500">1st Med Bn Mission Planner</p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
@@ -109,7 +109,9 @@ export default function SetupPage() {
           <label className="block text-[10px] font-black uppercase text-slate-400 mb-2">Exercise Name</label>
           <div className="flex space-x-2">
             <input type="text" value={exerciseName} onChange={(e) => setExerciseName(e.target.value)} className="flex-1 border-2 border-slate-300 rounded p-2 font-bold" />
-            <button onClick={generateName} className="bg-blue-600 text-white px-4 rounded font-black text-xs hover:bg-blue-700 transition active:scale-95">{isGenerating ? "..." : "AI GEN"}</button>
+            <button onClick={generateName} disabled={isGenerating} className="bg-blue-600 text-white px-4 rounded font-black text-xs hover:bg-blue-700 transition">
+              {isGenerating ? "..." : "AI GEN"}
+            </button>
           </div>
         </div>
       </div>
@@ -126,7 +128,7 @@ export default function SetupPage() {
                 <div className="flex items-center p-3 bg-slate-50 hover:bg-blue-50 transition cursor-pointer">
                   <input type="checkbox" checked={selectedMETs.includes(met.id)} onChange={() => setSelectedMETs(selectedMETs.includes(met.id) ? selectedMETs.filter(id => id !== met.id) : [...selectedMETs, met.id])} className="h-5 w-5 mr-4" />
                   <div className="flex-1 font-bold text-[10px] uppercase" onClick={() => setExpandedMET(expandedMET === met.id ? null : met.id)}>{met.id}: {met.name}</div>
-                  <div className="font-black text-lg">{expandedMET === met.id ? '▾' : '▸'}</div>
+                  <div className="font-black text-lg" onClick={() => setExpandedMET(expandedMET === met.id ? null : met.id)}>{expandedMET === met.id ? '▾' : '▸'}</div>
                 </div>
                 {expandedMET === met.id && (
                   <div className="p-4 bg-white border-t-2 border-slate-50 space-y-4">
@@ -144,3 +146,48 @@ export default function SetupPage() {
                           </div>
                         )}
                       </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <div className="space-y-8">
+          <section className="bg-white p-6 rounded-2xl shadow-xl border-2 border-slate-200">
+            <div className="flex justify-between items-center mb-6 border-b-2 pb-2">
+              <h2 className="text-xl font-black uppercase italic text-slate-800">Role 2 Footprint</h2>
+              <button onClick={toggleAllSpaces} className="text-[10px] font-black bg-emerald-900 text-white px-3 py-1 rounded-full uppercase">Select All</button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {FOOTPRINT.map(s => (
+                <label key={s} className="flex items-center space-x-2 p-2 bg-slate-50 rounded text-[10px] font-bold uppercase cursor-pointer hover:bg-emerald-50 transition border border-slate-100">
+                  <input type="checkbox" checked={selectedSpaces.includes(s)} onChange={() => setSelectedSpaces(selectedSpaces.includes(s) ? selectedSpaces.filter(x => x !== s) : [...selectedSpaces, s])} className="h-4 w-4" /> <span>{s}</span>
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section className="bg-white p-6 rounded-2xl shadow-xl border-2 border-slate-200">
+            <h2 className="text-xl font-black uppercase italic mb-6 border-b-2 pb-2 text-slate-800">Specialty Evaluators</h2>
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
+              {SPECIALTIES.map(spec => (
+                <div key={spec} className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <span className="text-[10px] font-black uppercase text-slate-700">{spec}</span>
+                  <input type="number" defaultValue={0} className="w-16 text-center border-2 border-slate-300 rounded font-black text-blue-900 outline-none" />
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <Link href="/tactical">
+        <button className="mt-12 w-full bg-slate-900 text-white font-black py-8 rounded-3xl shadow-2xl hover:bg-black transition text-3xl uppercase tracking-tighter border-b-[12px] border-slate-700">
+          Set Casualty Flow →
+        </button>
+      </Link>
+    </div>
+  );
+}

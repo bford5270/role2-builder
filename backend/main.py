@@ -44,17 +44,17 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 async def generate_name(data: dict):
     aor = data.get("aor", "General")
     unit = data.get("unitType", "Division")
-    prompt = f"Provide one unique USMC exercise name for a {unit} unit in {aor}. Style: Two words. No 'Crimson', 'Scalpel', 'Steel'. Random: {random.random()}"
+    # Added explicit instruction and random seed for reiteration on every click
+    prompt = f"Provide one unique USMC medical exercise name for a {unit} unit in {aor}. Use a style of two aggressive words. Avoid words like 'Crimson', 'Scalpel', or 'Steel'. Random seed value: {random.random()}"
     response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
     return {"name": response.text.strip()}
 
 @app.post("/generate-msel")
 async def generate_msel(data: dict):
-    # This structure will be populated by tactical configuration in the next step
     df = pd.DataFrame([
-        {"Time": "0800", "Inject": "EXSTART", "Description": "All Role 2 sections (STP/FRSS) active."},
-        {"Time": "1000", "Inject": "Wave 1", "Description": "Triage and disposition initiated."},
-        {"Time": "1400", "Inject": "MASCAL", "Description": "HSS-SVCS-3701 activated."}
+        {"Time": "0800", "Inject": "EXSTART", "Description": "Role 2 units established."},
+        {"Time": "1000", "Inject": "Patient Influx", "Description": "Initial wave of casualties."},
+        {"Time": "1400", "Inject": "MASCAL Event", "Description": "HSS-SVCS-3701 triggered."}
     ])
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -64,7 +64,7 @@ async def generate_msel(data: dict):
 
 @app.post("/generate-warno")
 async def generate_warno(data: dict):
-    prompt = f"Draft a USMC Medical WARNO. Exercise: {data.get('exerciseName')}. METs: {data.get('selectedMETs')}."
+    prompt = f"Draft a formal USMC Medical WARNO for {data.get('exerciseName')}. METs: {data.get('selectedMETs')}."
     response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
     db = SessionLocal()
     new_ex = Exercise(name=data.get('exerciseName'), details=data, warno=response.text)
