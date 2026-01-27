@@ -336,7 +336,7 @@ export default function SetupPage() {
     };
     localStorage.setItem('exerciseConfig', JSON.stringify(config));
     // Navigate to next page (scenario planning)
-    // window.location.href = '/scenario';
+    window.location.href = '/tactical';
   };
 
   return (
