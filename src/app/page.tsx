@@ -1,7 +1,6 @@
 "use client";
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { ChevronDown, ChevronRight } from 'lucide-react';
 
 export default function SetupPage() {
   const [exerciseName, setExerciseName] = useState("");
@@ -11,9 +10,10 @@ export default function SetupPage() {
   const [selectedMETs, setSelectedMETs] = useState<string[]>([]);
   const [expandedMET, setExpandedMET] = useState<string | null>(null);
 
+  [cite_start]// DATA FROM NAVMC 3500.84A [cite: 3, 4, 7-19]
   const MET_DATA = [
     { id: 'MET 1', name: 'Provide Task-Organized Forces', events: ['HSS-PLAN-7001', 'HSS-PLAN-6001'] },
-    { id: 'MET 2', name: 'Conduct Casualty Treatment', events: ['HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
+    { id: 'MET 2', name: 'Conduct Casualty Treatment', events: ['HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-FRSS-4001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 3', name: 'Conduct Temporary Casualty Holding', events: ['HSS-OPS-7001', 'HSS-MBN-6001', 'HSS-STP-5001', 'HSS-AID-5601', 'HSS-DENT-3001', 'HSS-DENT-3002', 'HSS-SVCS-3401', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3701'] },
     { id: 'MET 4', name: 'Conduct Casualty Evacuation', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-OPS-6001', 'HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-FRSS-4001', 'HSS-SVCS-3701', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 5', name: 'Conduct Mass Casualty Operations', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-OPS-6001', 'HSS-PLAN-6001', 'HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
@@ -79,7 +79,7 @@ export default function SetupPage() {
                 <div className="flex items-center p-3 bg-slate-50 hover:bg-blue-50 transition cursor-pointer">
                   <input type="checkbox" checked={selectedMETs.includes(met.id)} onChange={() => setSelectedMETs(selectedMETs.includes(met.id) ? selectedMETs.filter(id => id !== met.id) : [...selectedMETs, met.id])} className="h-5 w-5 mr-4" />
                   <div className="flex-1 font-bold text-[10px] uppercase" onClick={() => setExpandedMET(expandedMET === met.id ? null : met.id)}>{met.id}: {met.name}</div>
-                  {expandedMET === met.id ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}
+                  <div className="text-lg font-bold">{expandedMET === met.id ? '▾' : '▸'}</div>
                 </div>
                 {expandedMET === met.id && (
                   <div className="p-4 bg-white border-t-2 border-slate-50 space-y-2">
