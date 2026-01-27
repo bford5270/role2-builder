@@ -12,11 +12,12 @@ export default function SetupPage() {
   const [selectedMETs, setSelectedMETs] = useState<string[]>([]);
   const [expandedMET, setExpandedMET] = useState<string | null>(null);
 
+  // DATA FROM NAVMC 3500.84A 
   const MET_DATA = [
     { id: 'MET 1', name: 'Provide Task-Organized Forces', events: ['HSS-PLAN-7001', 'HSS-PLAN-6001'] },
-    { id: 'MET 2', name: 'Conduct Casualty Treatment', events: ['HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
+    { id: 'MET 2', name: 'Conduct Casualty Treatment', events: ['HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-FRSS-4001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 3', name: 'Conduct Temporary Casualty Holding', events: ['HSS-OPS-7001', 'HSS-MBN-6001', 'HSS-STP-5001', 'HSS-AID-5601', 'HSS-DENT-3001', 'HSS-DENT-3002', 'HSS-SVCS-3401', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3701'] },
-    { id: 'MET 4', name: 'Conduct Casualty Evacuation', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-PLAN-6001', 'HSS-OPS-6001', 'HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-FRSS-4001', 'HSS-SVCS-3701', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
+    { id: 'MET 4', name: 'Conduct Casualty Evacuation', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-OPS-6001', 'HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-FRSS-4001', 'HSS-SVCS-3701', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 5', name: 'Conduct Mass Casualty Operations', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-OPS-6001', 'HSS-PLAN-6001', 'HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 6', name: 'Conduct Dental Services', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-MBN-6001', 'HSS-PLAN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 7', name: 'Conduct Medical Regulating', events: ['HSS-OPS-7001', 'HSS-MBN-6001', 'HSS-OPS-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-DENT-3001', 'HSS-DENT-3002'] }
@@ -35,7 +36,7 @@ export default function SetupPage() {
       });
       const data = await response.json();
       setExerciseName(data.name);
-    } catch (e) { setExerciseName("Operation Granite Triage"); }
+    } catch (e) { setExerciseName("Operation Obsidian Shield"); }
     setIsGenerating(false);
   };
 
@@ -48,29 +49,28 @@ export default function SetupPage() {
 
       {/* MISSION CONTEXT */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white p-4 rounded-xl border-2 border-slate-200">
+        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 shadow-sm">
           <label className="block text-[10px] font-black uppercase text-slate-400 mb-2">Primary AOR</label>
-          <select value={aor} onChange={(e) => setAor(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50">
+          <select value={aor} onChange={(e) => setAor(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50 outline-none">
             <option>Urban</option><option>Jungle</option><option>Arctic</option><option>Desert</option>
           </select>
         </div>
-        <div className="bg-white p-4 rounded-xl border-2 border-slate-200">
+        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 shadow-sm">
           <label className="block text-[10px] font-black uppercase text-slate-400 mb-2">Supported Unit</label>
-          <select value={unitType} onChange={(e) => setUnitType(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50">
+          <select value={unitType} onChange={(e) => setUnitType(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50 outline-none">
             <option>Division</option><option>CLB</option>
           </select>
         </div>
-        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 col-span-2">
+        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 shadow-sm col-span-2">
           <label className="block text-[10px] font-black uppercase text-slate-400 mb-2">Exercise Name</label>
           <div className="flex space-x-2">
-            <input type="text" value={exerciseName} onChange={(e) => setExerciseName(e.target.value)} className="flex-1 border-2 border-slate-300 rounded p-2 font-bold" />
-            <button onClick={generateName} className="bg-blue-600 text-white px-4 rounded font-black text-xs hover:bg-blue-700">{isGenerating ? "..." : "AI GEN"}</button>
+            <input type="text" value={exerciseName} onChange={(e) => setExerciseName(e.target.value)} className="flex-1 border-2 border-slate-300 rounded p-2 font-bold text-sm" />
+            <button onClick={generateName} className="bg-blue-600 text-white px-3 rounded font-black text-[10px] hover:bg-blue-700 transition">{isGenerating ? "..." : "AI GEN"}</button>
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-        {/* T&R METL SECTION  */}
         <section className="bg-white p-6 rounded-2xl shadow-xl border-2 border-slate-200">
           <div className="flex justify-between items-center mb-6 border-b-2 pb-2">
             <h2 className="text-xl font-black uppercase italic text-slate-800">HSS T&R METL</h2>
