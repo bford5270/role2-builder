@@ -8,14 +8,12 @@ export default function SetupPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [aor, setAor] = useState("Urban");
   const [unitType, setUnitType] = useState("Division");
-  const [duration, setDuration] = useState(3);
   const [selectedMETs, setSelectedMETs] = useState<string[]>([]);
   const [expandedMET, setExpandedMET] = useState<string | null>(null);
 
-  [cite_start]// DATA FROM NAVMC 3500.84A [cite: 3, 4, 7-19]
   const MET_DATA = [
     { id: 'MET 1', name: 'Provide Task-Organized Forces', events: ['HSS-PLAN-7001', 'HSS-PLAN-6001'] },
-    { id: 'MET 2', name: 'Conduct Casualty Treatment', events: ['HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-FRSS-4001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
+    { id: 'MET 2', name: 'Conduct Casualty Treatment', events: ['HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 3', name: 'Conduct Temporary Casualty Holding', events: ['HSS-OPS-7001', 'HSS-MBN-6001', 'HSS-STP-5001', 'HSS-AID-5601', 'HSS-DENT-3001', 'HSS-DENT-3002', 'HSS-SVCS-3401', 'HSS-SVCS-3501', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3701'] },
     { id: 'MET 4', name: 'Conduct Casualty Evacuation', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-OPS-6001', 'HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-PET-4701', 'HSS-FRSS-4001', 'HSS-SVCS-3701', 'HSS-SVCS-3502', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
     { id: 'MET 5', name: 'Conduct Mass Casualty Operations', events: ['HSS-OPS-7001', 'HSS-PLAN-7001', 'HSS-OPS-6001', 'HSS-PLAN-6001', 'HSS-MBN-6001', 'HSS-AID-5601', 'HSS-STP-5001', 'HSS-SVCS-3701', 'HSS-SVCS-3501', 'HSS-SVCS-3507', 'HSS-SVCS-3401', 'HSS-DENT-3001', 'HSS-DENT-3002'] },
@@ -47,25 +45,24 @@ export default function SetupPage() {
         <p className="text-blue-700 font-bold uppercase tracking-widest text-sm mt-2">1st Med Bn Mission Planner</p>
       </header>
 
-      {/* MISSION CONTEXT */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 shadow-sm">
+        <div className="bg-white p-4 rounded-xl border-2 border-slate-200">
           <label className="block text-[10px] font-black uppercase text-slate-400 mb-2">Primary AOR</label>
-          <select value={aor} onChange={(e) => setAor(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50 outline-none">
+          <select value={aor} onChange={(e) => setAor(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50">
             <option>Urban</option><option>Jungle</option><option>Arctic</option><option>Desert</option>
           </select>
         </div>
-        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 shadow-sm">
+        <div className="bg-white p-4 rounded-xl border-2 border-slate-200">
           <label className="block text-[10px] font-black uppercase text-slate-400 mb-2">Supported Unit</label>
-          <select value={unitType} onChange={(e) => setUnitType(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50 outline-none">
+          <select value={unitType} onChange={(e) => setUnitType(e.target.value)} className="w-full border-2 border-slate-200 rounded p-2 font-bold bg-slate-50">
             <option>Division</option><option>CLB</option>
           </select>
         </div>
-        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 shadow-sm col-span-2">
+        <div className="bg-white p-4 rounded-xl border-2 border-slate-200 col-span-2">
           <label className="block text-[10px] font-black uppercase text-slate-400 mb-2">Exercise Name</label>
           <div className="flex space-x-2">
-            <input type="text" value={exerciseName} onChange={(e) => setExerciseName(e.target.value)} className="flex-1 border-2 border-slate-300 rounded p-2 font-bold text-sm" />
-            <button onClick={generateName} className="bg-blue-600 text-white px-3 rounded font-black text-[10px] hover:bg-blue-700 transition">{isGenerating ? "..." : "AI GEN"}</button>
+            <input type="text" value={exerciseName} onChange={(e) => setExerciseName(e.target.value)} className="flex-1 border-2 border-slate-300 rounded p-2 font-bold" />
+            <button onClick={generateName} className="bg-blue-600 text-white px-4 rounded font-black text-xs hover:bg-blue-700">{isGenerating ? "..." : "AI GEN"}</button>
           </div>
         </div>
       </div>
@@ -102,7 +99,7 @@ export default function SetupPage() {
             <div className="grid grid-cols-2 gap-2">
               {FOOTPRINT.map(s => (
                 <label key={s} className="flex items-center space-x-2 p-2 bg-slate-50 rounded text-[10px] font-bold uppercase cursor-pointer hover:bg-emerald-50">
-                  <input type="checkbox" className="h-4 w-4 cursor-pointer" /> <span>{s}</span>
+                  <input type="checkbox" className="h-4 w-4" /> <span>{s}</span>
                 </label>
               ))}
             </div>
@@ -114,7 +111,7 @@ export default function SetupPage() {
               {SPECIALTIES.map(spec => (
                 <div key={spec} className="flex justify-between items-center bg-slate-50 p-2 rounded border border-slate-200">
                   <span className="text-[10px] font-black uppercase text-slate-700">{spec}</span>
-                  <input type="number" defaultValue={0} className="w-12 text-center border-2 border-slate-200 rounded font-black text-blue-900 outline-none" />
+                  <input type="number" defaultValue={0} className="w-12 text-center border-2 border-slate-200 rounded font-black text-blue-900" />
                 </div>
               ))}
             </div>
