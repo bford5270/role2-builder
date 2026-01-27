@@ -11,7 +11,6 @@ from io import BytesIO
 
 app = FastAPI()
 
-# --- DATABASE ENGINE ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -37,38 +36,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- GENAI CLIENT ---
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 @app.post("/generate-name")
 async def generate_name(data: dict):
     aor = data.get("aor", "General")
-    unit = data.get("unitType", "Division")
-    # Added explicit instruction and random seed for reiteration on every click
-    prompt = f"Provide one unique USMC medical exercise name for a {unit} unit in {aor}. Use a style of two aggressive words. Avoid words like 'Crimson', 'Scalpel', or 'Steel'. Random seed value: {random.random()}"
+    unit = data.get("unitType", "Medical")
+    # Random seed forces a new name reiteration every time the button is clicked
+    prompt = f"Generate one unique USMC exercise name for a {unit} unit in {aor}. Use two aggressive words. Avoid 'Crimson', 'Scalpel', 'Steel'. Seed: {random.random()}"
     response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
     return {"name": response.text.strip()}
 
 @app.post("/generate-msel")
 async def generate_msel(data: dict):
-    df = pd.DataFrame([
-        {"Time": "0800", "Inject": "EXSTART", "Description": "Role 2 units established."},
-        {"Time": "1000", "Inject": "Patient Influx", "Description": "Initial wave of casualties."},
-        {"Time": "1400", "Inject": "MASCAL Event", "Description": "HSS-SVCS-3701 triggered."}
-    ])
+    # Base structure for the Excel export
+    df = pd.DataFrame([{"Time": "0800", "Inject": "EXSTART", "Description": "HSS capabilities established.", "MET": "HSS-MBN-6001"}])
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='MSEL')
-    headers = {'Content-Disposition': 'attachment; filename="MSEL.xlsx"'}
-    return Response(output.getvalue(), headers=headers, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    return Response(output.getvalue(), headers={'Content-Disposition': 'attachment; filename="MSEL.xlsx"'}, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 @app.post("/generate-warno")
 async def generate_warno(data: dict):
-    prompt = f"Draft a formal USMC Medical WARNO for {data.get('exerciseName')}. METs: {data.get('selectedMETs')}."
+    prompt = f"Draft a USMC Medical WARNO. Exercise: {data.get('exerciseName')}. Duration: {data.get('duration')} days."
     response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
     db = SessionLocal()
-    new_ex = Exercise(name=data.get('exerciseName'), details=data, warno=response.text)
-    db.add(new_ex)
+    db.add(Exercise(name=data.get('exerciseName'), details=data, warno=response.text))
     db.commit()
     db.close()
     return {"document": response.text}
