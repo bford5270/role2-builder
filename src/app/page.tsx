@@ -323,15 +323,15 @@ export default function SetupPage() {
 
   // Save configuration and proceed
   const saveAndProceed = () => {
-    const config = {
-      exerciseName,
+   const config = {
+      exercise_name: exerciseName,
       duration,
-      supportedUnit,
+      supported_unit: supportedUnit,
       environment,
-      threatLevel,
+      threat_level: threatLevel,
       region,
-      selectedMETs,
-      selectedFootprint,
+      selected_mets: selectedMETs,
+      selected_footprint: selectedFootprint,
       specialists,
     };
     localStorage.setItem('exerciseConfig', JSON.stringify(config));
