@@ -581,7 +581,32 @@ async def list_exercises():
     db = SessionLocal()
     try:
         exs = db.query(Exercise).order_by(Exercise.created_at.desc()).all()
-        return {"exercises": [{"id": e.id, "name": e.name, "created_at": e.created_at.isoformat() if e.created_at else None, "duration": e.config.get("duration") if e.config else None, "environment": e.config.get("environment") if e.config else None, "total_cases": len(e.cases) if e.cases else 0} for e in exs]}
+        exercises_list = []
+        for e in exs:
+            try:
+                config = e.config or {}
+                cases = e.cases or []
+                exercises_list.append({
+                    "id": e.id,
+                    "name": e.name,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                    "duration": config.get("duration") if isinstance(config, dict) else None,
+                    "environment": config.get("environment") if isinstance(config, dict) else None,
+                    "total_cases": len(cases) if isinstance(cases, list) else 0
+                })
+            except Exception as ex:
+                # Log but skip malformed exercises
+                exercises_list.append({
+                    "id": e.id,
+                    "name": e.name or "Unknown",
+                    "created_at": None,
+                    "duration": None,
+                    "environment": None,
+                    "total_cases": 0
+                })
+        return {"exercises": exercises_list}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         db.close()
 
