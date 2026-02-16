@@ -767,6 +767,13 @@ export default function SetupPage() {
           </button>
         </div>
       </section>
+
+      {/* History Link */}
+      <div className="mt-4 text-center">
+        <a href="/history" className="text-blue-600 hover:text-blue-700 underline text-sm font-medium">
+          View Past Exercises →
+        </a>
+      </div>
     </div>
   );
 }

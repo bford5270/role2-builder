@@ -289,6 +289,13 @@ export default function TacticalScenarioPage() {
             <div className="bg-stone-700 rounded p-2 text-center"><div className="text-lg mb-1">📚</div><div>Case_Book.docx</div></div>
           </div>
         </div>
+
+        {/* History Link */}
+        <div className="mt-6 text-center">
+          <a href="/history" className="text-amber-400 hover:text-amber-300 underline text-sm">
+            View Past Exercises →
+          </a>
+        </div>
       </div>
     </div>
   );
