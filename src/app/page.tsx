@@ -2,6 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
+
 export default function SetupPage() {
   const [exerciseName, setExerciseName] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -292,7 +294,7 @@ export default function SetupPage() {
   const generateName = async () => {
     setIsGenerating(true);
     try {
-      const resp = await fetch("https://role2-builder-production.up.railway.app/generate-name", {
+      const resp = await fetch(`${API_BASE}/generate-name`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 

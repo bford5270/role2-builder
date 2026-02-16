@@ -11,7 +11,7 @@ interface ExerciseSummary {
   total_cases: number;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://your-railway-app.railway.app';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
 
 export default function HistoricExercisesPage() {
   const [exercises, setExercises] = useState<ExerciseSummary[]>([]);

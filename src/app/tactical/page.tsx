@@ -50,7 +50,7 @@ const MASCAL_ETIOLOGIES = [
   'VBIED'
 ];
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://your-railway-app.railway.app';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
 
 export default function TacticalScenarioPage() {
   const [config, setConfig] = useState<ExerciseConfig | null>(null);

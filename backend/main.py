@@ -584,8 +584,14 @@ async def list_exercises():
         exercises_list = []
         for e in exs:
             try:
+                # Parse JSON if stored as string
                 config = e.config or {}
+                if isinstance(config, str):
+                    config = json.loads(config)
                 cases = e.cases or []
+                if isinstance(cases, str):
+                    cases = json.loads(cases)
+
                 exercises_list.append({
                     "id": e.id,
                     "name": e.name,
@@ -632,15 +638,28 @@ async def download_exercise(exercise_id: int):
         ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
         if not ex:
             raise HTTPException(status_code=404, detail="Not found")
-        config = ExerciseConfig(**ex.config)
-        
+
+        # Parse JSON if stored as string
+        config_data = ex.config
+        if isinstance(config_data, str):
+            config_data = json.loads(config_data)
+        config = ExerciseConfig(**config_data)
+
+        msel_data = ex.msel_data
+        if isinstance(msel_data, str):
+            msel_data = json.loads(msel_data)
+
+        cases = ex.cases
+        if isinstance(cases, str):
+            cases = json.loads(cases)
+
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(ex.msel_data, config).getvalue())
+            zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(msel_data, config).getvalue())
             zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), ex.warno_text).getvalue())
             zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", ex.annex_q_text).getvalue())
             zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), ex.medroe_text).getvalue())
-            zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(ex.cases, config).getvalue())
+            zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
         zip_buf.seek(0)
         return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
     finally:
@@ -658,10 +677,23 @@ async def download_document(exercise_id: int, doc_type: str):
         ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
         if not ex:
             raise HTTPException(status_code=404, detail="Not found")
-        config = ExerciseConfig(**ex.config)
-        
+
+        # Parse JSON if stored as string
+        config_data = ex.config
+        if isinstance(config_data, str):
+            config_data = json.loads(config_data)
+        config = ExerciseConfig(**config_data)
+
+        msel_data = ex.msel_data
+        if isinstance(msel_data, str):
+            msel_data = json.loads(msel_data)
+
+        cases = ex.cases
+        if isinstance(cases, str):
+            cases = json.loads(cases)
+
         if doc_type == "msel":
-            buf, fn, mt = create_msel(ex.msel_data, config), f"{config.exercise_name}_MSEL.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            buf, fn, mt = create_msel(msel_data, config), f"{config.exercise_name}_MSEL.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         elif doc_type == "warno":
             buf, fn, mt = create_docx("WARNING ORDER", config.exercise_name.upper(), ex.warno_text), f"{config.exercise_name}_WARNO.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         elif doc_type == "annex_q":
@@ -669,7 +701,7 @@ async def download_document(exercise_id: int, doc_type: str):
         elif doc_type == "medroe":
             buf, fn, mt = create_docx("MEDROE", config.exercise_name.upper(), ex.medroe_text), f"{config.exercise_name}_MEDROE.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         else:
-            buf, fn, mt = create_case_book(ex.cases, config), f"{config.exercise_name}_Case_Book.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            buf, fn, mt = create_case_book(cases, config), f"{config.exercise_name}_Case_Book.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         
         return Response(buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{fn}"'}, media_type=mt)
     finally:
