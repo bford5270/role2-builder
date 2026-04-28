@@ -18,6 +18,63 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Phase 4 complete: background job infrastructure
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Phase:** Phase 4 — Background Job Infrastructure
+**Status going in:** Phase 3 committed (d3ca994), 69 tests green. Sync `/generate-exercise` runs the whole pipeline in one HTTP request — fine for small exercises but hits Railway / browser timeouts at the 5-7 day / 75+ case scale we're targeting.
+
+**Decisions confirmed before coding:**
+- Add new `POST /jobs/generate-exercise` alongside the legacy sync endpoint (no breaking change).
+- Two-table model: separate `exercise_jobs` row tracks status/progress/errors; existing `exercises` row holds the finished package and is created on completion.
+- DB stays optional — `InMemoryJobStore` falls back when `DATABASE_URL` is unset, same contract as the rest of the app.
+- Global `asyncio.Semaphore(1)` serializes job execution; additional submissions queue with status='queued'.
+
+**Pre-Phase-4 cleanup (folded in):**
+- Dropped dead `generate_case_sync`, `determine_case_phases`, `CASE_SYSTEM_PROMPT`, and the local copies of `DNBI_BY_ENVIRONMENT` / `TRAUMA_BY_ETIOLOGY` / `GENERAL_TRAUMA` from `main.py` (single source of truth in `matrices.py` / `prompts.py`).
+- Routed `generate_warno`, `generate_annex_q`, `generate_medroe`, and `/generate-name` through `provider.generate_text()`. Removed the direct `genai.Client` import from `main.py`. **Now every model call from `main.py` flows through `CaseProvider`.** The GovCloud transition only requires implementing `BedrockCaseProvider`.
+
+**Done this session:**
+- `backend/db.py` (new): `Base`, `Exercise`, new `ExerciseJob` SQLAlchemy model (status, current_phase, total_cases, completed_cases, errors JSON, exercise_id FK, error_message, generation_summary, timestamps), engine/SessionLocal lifecycle, `init_db()`. Pulled out so `jobs.py` can import without circular dependency.
+- `backend/jobs.py` (new):
+  - `JobRecord` Pydantic model with computed `progress` property.
+  - `JobStore` ABC with `create / get / update_progress / append_errors / mark_running / mark_complete / mark_failed / list_recent`.
+  - `InMemoryJobStore` — dict-backed, asyncio.Lock-protected, returns model copies (not references) so the lock is the only shared state.
+  - `PostgresJobStore` — short-lived sessions per call via `asyncio.to_thread` so we never hold a transaction across batch cycles.
+  - `get_job_store()` factory: Postgres when `SessionLocal` is set, in-memory otherwise.
+  - `get_job_semaphore()` lazily-created `asyncio.Semaphore(1)` (avoids capturing the wrong event loop at import time).
+  - `reset_singletons_for_tests()` test hook.
+- `main.py` refactor:
+  - Extracted `_run_exercise_pipeline(config, on_case_progress, on_phase) -> artifacts` from the legacy endpoint body. Sync `/generate-exercise` now calls into it.
+  - `_save_exercise_to_db()` and `_build_zip()` helpers shared between sync and async paths.
+  - `_run_exercise_job_worker(job_id)` — async worker that acquires the global semaphore, marks the job running, drives the pipeline, hooks `on_case_progress` (sync) → `asyncio.run_coroutine_threadsafe` → store update, persists the Exercise row, marks the job complete with the generation_summary.
+  - New endpoints:
+    - `POST /jobs/generate-exercise` — queues via `BackgroundTasks`, returns `{job_id, total_cases, status, current_phase, created_at}`.
+    - `GET /jobs/{job_id}` — current state including `progress` (0–1) and `errors_count`.
+    - `GET /jobs` — recent jobs list.
+    - `GET /jobs/{job_id}/download` — 409 until complete, 404 if no Exercise persisted, otherwise delegates to `download_exercise(exercise_id)`.
+- `backend/tests/test_jobs.py` (new): 12 tests covering JobStore CRUD/state transitions and end-to-end lifecycle through FastAPI's TestClient with the stub provider.
+- `requirements-dev.txt`: added `httpx==0.27.2` for the TestClient.
+- 81 tests passing total in ~1.7s.
+
+**Hot-path note:** TestClient runs BackgroundTasks on the event loop after the response returns, so the test polls `/jobs/{id}` until `status` leaves `running` — same pattern the frontend will use in Phase 5.
+
+**Next (Phase 5 — Frontend Progress UX):**
+- Update `src/app/tactical/page.tsx` to:
+  - POST `/jobs/generate-exercise`, get `job_id`.
+  - Poll `GET /jobs/{job_id}` every 2.5s, show real progress bar driven by `completed_cases / total_cases` and `current_phase`.
+  - On `complete`, hit `GET /jobs/{job_id}/download` for the ZIP.
+  - Surface `errors_count` and `generation_summary` to the user (so degraded packages no longer look like clean ones).
+  - Cancel button — sets a `cancelled` status the worker can check between batches (also touches `case_generator.on_progress`).
+
+**Open questions / blockers:**
+- SQLAlchemy 2.0 deprecation warning on `declarative_base()` — should switch to `sqlalchemy.orm.declarative_base()` at some point. Cosmetic for now.
+- Pydantic v2 deprecation warning on `.dict()` — switch to `.model_dump()`. Cosmetic.
+- Phase 5 cancel-button semantics: cancel between batches (graceful, ~5s lag) vs hard-stop. Bring up before implementation.
+- Same as before: SME matrix review, canonical MET list, Bedrock model id pinning at GovCloud onboarding.
+
+---
+
 ## 2026-04-29 (continued) — Phase 3 complete: batched case generation
 
 **Branch:** `claude/review-schedule-issues-pjHcI`

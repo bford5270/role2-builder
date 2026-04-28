@@ -1,18 +1,16 @@
 import os
 import random
 import json
+import asyncio
 import zipfile
+import traceback
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, Response, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from google import genai
 import pandas as pd
 from docx import Document
 from docx.shared import Pt
@@ -24,32 +22,12 @@ from backend.casualty_planner import EtiologyBucket, build_day_plan
 from backend.schedule_builder import build_schedule
 from backend.matrices import TRAUMA_BY_ETIOLOGY, GENERAL_TRAUMA
 from backend.case_generator import generate_all_cases
+from backend.db import Exercise, SessionLocal, init_db
+from backend.jobs import JobStatus, get_job_semaphore, get_job_store
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
-# Database setup
-DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-engine = create_engine(DATABASE_URL) if DATABASE_URL else None
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) if engine else None
-Base = declarative_base()
-
-class Exercise(Base):
-    __tablename__ = "exercises"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    config = Column(JSON)
-    cases = Column(JSON)
-    msel_data = Column(JSON)
-    warno_text = Column(Text)
-    annex_q_text = Column(Text)
-    medroe_text = Column(Text)
-
-if engine:
-    Base.metadata.create_all(bind=engine)
+init_db()
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,8 +36,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # Pydantic Models
 class DayConfig(BaseModel):
@@ -86,106 +62,6 @@ class ExerciseConfig(BaseModel):
     specialists: Dict[str, int]
     days: List[DayConfig]
 
-# Case data
-DNBI_BY_ENVIRONMENT = {
-    "Jungle": ["Dengue hemorrhagic fever", "Malaria", "Snake envenomation", "Cellulitis", "Heat exhaustion", "Leptospirosis"],
-    "Desert": ["Heat stroke", "Severe dehydration", "Scorpion envenomation", "Sand fly fever", "Rhabdomyolysis"],
-    "Arctic": ["Severe frostbite", "Hypothermia", "Trench foot", "Cold urticaria"],
-    "Maritime": ["Near-drowning", "Decompression sickness", "Marine envenomation", "Saltwater aspiration"],
-    "Urban": ["Crush injury", "Smoke inhalation", "MSK overuse", "CO poisoning"],
-    "Mountain": ["HAPE", "HACE", "Acute mountain sickness", "Fall with fractures"],
-    "Littoral": ["Near-drowning", "Jellyfish envenomation", "Coral cuts with infection", "Heat exhaustion"],
-    "General": ["Combat stress reaction", "Dental emergency", "Acute appendicitis", "Kidney stones", "Pneumonia", "Gastroenteritis"]
-}
-
-TRAUMA_BY_ETIOLOGY = {
-    "IED/Blast": ["Traumatic bilateral lower extremity amputation", "TBI with penetrating fragment", "Blast lung injury", "Penetrating abdominal trauma with evisceration", "Severe burns with blast injury"],
-    "Vehicle Rollover": ["Blunt abdominal trauma with splenic laceration", "C-spine fracture", "Bilateral femur fractures", "Flail chest", "Pelvic fracture with hemorrhage"],
-    "GSW/Small Arms": ["Penetrating chest trauma with hemothorax", "GSW abdomen with liver laceration", "GSW extremity with vascular injury", "GSW neck with airway compromise"],
-    "Aviation Mishap": ["Multi-system blunt trauma", "Severe burns (>40% TBSA)", "Spinal cord injury", "Traumatic brain injury"],
-    "Indirect Fire/Mortar": ["Multiple penetrating fragment wounds", "TBI from blast", "Traumatic amputation", "Penetrating eye injury"],
-    "Structural Collapse": ["Crush syndrome", "Compartment syndrome", "Traumatic asphyxiation", "Multiple long bone fractures"],
-    "Burns/Fire": ["Severe thermal burns (>30% TBSA)", "Inhalation injury", "CO poisoning", "Facial burns with airway compromise"],
-    "Drowning (Amphibious)": ["Near-drowning with aspiration", "Hypothermia with near-drowning", "Trauma from vessel impact"],
-    "VBIED": ["Multi-system blast trauma", "Severe burns with TBI", "Traumatic amputation bilateral", "Penetrating torso wounds"],
-}
-
-GENERAL_TRAUMA = [
-    "GSW right thigh with femoral artery injury", "Penetrating abdominal trauma", "Blunt chest trauma with rib fractures",
-    "Open tibia-fibula fracture", "Traumatic brain injury - moderate", "Blast injury with TM rupture",
-    "Penetrating neck trauma", "GSW chest with pneumothorax", "Pelvic fracture - stable", "Burn injury 15% TBSA"
-]
-
-def determine_case_phases(case_type: str, mechanism: str) -> List[str]:
-    surgical = ["amputation", "evisceration", "vascular", "laceration", "hemothorax", "fasciotomy", 
-                "thoracotomy", "GSW abdomen", "penetrating chest", "pelvic fracture with", "compartment", "crush syndrome", "burns (>30%", "burns (>40%"]
-    medical = ["dengue", "malaria", "fever", "heat stroke", "hypothermia", "envenomation", "drowning", 
-               "decompression", "altitude", "HAPE", "HACE", "pneumonia", "gastroenteritis", "appendicitis", 
-               "kidney stones", "combat stress", "dental", "TBI", "concussion", "closed head"]
-    
-    case_lower = (case_type + " " + mechanism).lower()
-    
-    for kw in surgical:
-        if kw.lower() in case_lower:
-            return ["DCR", "DCS", "PCC"]
-    for kw in medical:
-        if kw.lower() in case_lower:
-            return ["DCR", "PCC"]
-    return ["DCR", "DCS", "PCC"]
-
-CASE_SYSTEM_PROMPT = """You are an expert Military Medical Simulation Designer for Role 2 (Forward Surgical) care.
-Generate a detailed simulation case with:
-1. Z-MIST (Zap=EXACTLY 5 digits, Mechanism, Injuries, Signs, Treatment)
-2. 9-Line Medevac (NATO format)
-3. Clinical Phases (only include phases specified - some cases don't need surgery)
-4. Vitals trends (3-4 timestamps per phase)
-5. Contingencies (If/Then decision points)
-6. Evacuation (transport type, considerations, handover notes)
-7. Learning Objectives (3-5 specific, measurable)
-8. Debrief Questions (4-6 thought-provoking)
-
-If DCS not needed, set dcs to null.
-
-JSON STRUCTURE:
-{
-  "meta": {"title": "String", "estimated_duration": "String", "personnel": "String", "target_specialty": "String"},
-  "learning_objectives": ["String"],
-  "zmist": {"zap": "5 digits", "mechanism": "String", "injuries": "String", "signs": "String", "treatment": "String"},
-  "nine_line": {"line1_location": "String", "line2_freq": "String", "line3_patients_precedence": "String", "line4_equipment": "String", "line5_patients_type": "String", "line6_security": "String", "line7_marking": "String", "line8_nationality": "String", "line9_nbc_terrain": "String"},
-  "patient_data": {"demographics": "String", "history": "String", "allergies": "String"},
-  "triage_category": "T1/T2/T3/T4",
-  "phases": {
-    "dcr": {"title": "Damage Control Resuscitation", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [{"time": "String", "hr": "String", "bp": "String", "rr": "String", "spo2": "String", "gcs": "String"}], "contingencies": [{"condition": "String", "consequence": "String", "intervention": "String"}]},
-    "dcs": null or {"title": "Damage Control Surgery", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [...], "contingencies": [...]},
-    "pcc": {"title": "Prolonged Casualty Care", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [...], "contingencies": [...]}
-  },
-  "labs": {"hgb": "String", "ph": "String", "lactate": "String", "base_excess": "String", "inr": "String"},
-  "evacuation": {"transport_type": "String", "priority": "String", "considerations": "String", "handover_notes": "String"},
-  "debrief_questions": ["String"]
-}"""
-
-def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str) -> Dict:
-    phases = determine_case_phases(case_type, mechanism)
-    phase_instr = "This case does NOT require surgery. Only DCR and PCC. Set dcs to null." if phases == ["DCR", "PCC"] else "This case requires surgery. Include DCR, DCS, and PCC."
-    
-    prompt = f"CONTEXT: Role 2 in {environment}, {region}.\nCASE: {case_type}\nMECHANISM: {mechanism}\n{phase_instr}\nGenerate the case now."
-    
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config={"system_instruction": CASE_SYSTEM_PROMPT, "response_mime_type": "application/json"}
-    )
-    
-    try:
-        parsed = json.loads(response.text)
-    except json.JSONDecodeError:
-        text = response.text
-        start, end = text.find('{'), text.rfind('}') + 1
-        if start != -1 and end > start:
-            parsed = json.loads(text[start:end])
-        else:
-            raise
-    return inject_stable_ids(parsed)
 
 def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True) -> Dict:
     return inject_stable_ids({
@@ -201,43 +77,49 @@ def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True)
         "debrief_questions": ["What were key findings?", "Was resuscitation adequate?", "What would you change?"]
     })
 
-# Document generation
-def generate_warno(config: ExerciseConfig) -> str:
-    prompt = f"""Generate USMC WARNO (5-paragraph order) for:
-Exercise: {config.exercise_name}, Duration: {config.duration} days
-Unit: {config.supported_unit}, Environment: {config.environment}, Region: {config.region}
-Threat: {config.threat_level}, Footprint: {', '.join(config.selected_footprint)}
-Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {d.total_patients} cas, {'MASCAL '+d.mascal_etiology if d.mascal else 'No MASCAL'}, {'CBRN' if d.cbrn else ''}, {'Night' if d.night_ops else 'Day'}" for d in config.days])}
+# Document generation — routed through CaseProvider.generate_text so the
+# GovCloud transition only needs to swap the provider implementation, not main.
 
-Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
-    
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-    return response.text
+async def generate_warno(config: ExerciseConfig) -> str:
+    days_summary = '; '.join([
+        f"Day {d.day_number}: {d.tactical_setting}, {d.total_patients} cas, "
+        f"{'MASCAL ' + (d.mascal_etiology or '') if d.mascal else 'No MASCAL'}, "
+        f"{'CBRN' if d.cbrn else ''}, {'Night' if d.night_ops else 'Day'}"
+        for d in config.days
+    ])
+    prompt = (
+        f"Generate USMC WARNO (5-paragraph order) for:\n"
+        f"Exercise: {config.exercise_name}, Duration: {config.duration} days\n"
+        f"Unit: {config.supported_unit}, Environment: {config.environment}, Region: {config.region}\n"
+        f"Threat: {config.threat_level}, Footprint: {', '.join(config.selected_footprint)}\n"
+        f"Days: {days_summary}\n\n"
+        f"Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"
+    )
+    return await get_case_provider().generate_text(prompt)
 
-def generate_annex_q(config: ExerciseConfig) -> str:
+
+async def generate_annex_q(config: ExerciseConfig) -> str:
     total_cas = sum(d.total_patients for d in config.days)
-    prompt = f"""Generate Annex Q (Medical Services) for:
-Exercise: {config.exercise_name}, Environment: {config.environment}, Region: {config.region}
-Total Casualties: {total_cas}, Footprint: {', '.join(config.selected_footprint)}
-Specialists: {json.dumps(config.specialists)}
+    prompt = (
+        f"Generate Annex Q (Medical Services) for:\n"
+        f"Exercise: {config.exercise_name}, Environment: {config.environment}, Region: {config.region}\n"
+        f"Total Casualties: {total_cas}, Footprint: {', '.join(config.selected_footprint)}\n"
+        f"Specialists: {json.dumps(config.specialists)}\n\n"
+        f"Include: HSS concept, MTFs, MEDEVAC, Class VIII, blood support, dental, combat stress, PVNTMED"
+    )
+    return await get_case_provider().generate_text(prompt)
 
-Include: HSS concept, MTFs, MEDEVAC, Class VIII, blood support, dental, combat stress, PVNTMED"""
-    
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-    return response.text
 
-def generate_medroe(config: ExerciseConfig) -> str:
+async def generate_medroe(config: ExerciseConfig) -> str:
     has_cbrn = any(d.cbrn for d in config.days)
     has_detainee = any(d.detainee_ops for d in config.days)
-    
-    prompt = f"""Generate MEDROE for:
-Exercise: {config.exercise_name}, Environment: {config.environment}
-CBRN: {has_cbrn}, Detainee Ops: {has_detainee}
-
-Include: Treatment priorities, evacuation priorities, holding policy, blood products, documentation, MASCAL procedures"""
-    
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-    return response.text
+    prompt = (
+        f"Generate MEDROE for:\n"
+        f"Exercise: {config.exercise_name}, Environment: {config.environment}\n"
+        f"CBRN: {has_cbrn}, Detainee Ops: {has_detainee}\n\n"
+        f"Include: Treatment priorities, evacuation priorities, holding policy, blood products, documentation, MASCAL procedures"
+    )
+    return await get_case_provider().generate_text(prompt)
 
 # Schedule generation now lives in backend.schedule_builder; assign_evaluator and
 # generate_schedule were removed in favor of build_schedule(plans, cases_by_day, ...).
@@ -452,8 +334,8 @@ async def generate_name_endpoint(data: dict):
     unit = data.get("supportedUnit", "Medical")
     
     prompt = f"Generate one USMC exercise name for {unit} in {env}, {region}, {threat}. Two tactical words. Format: 'Operation [Word] [Word]'. Avoid: Crimson, Steel, Iron, Thunder, Eagle. Return ONLY the name. Seed: {random.random()}"
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-    name = response.text.strip().replace('"', '').replace("'", "")
+    text = await get_case_provider().generate_text(prompt)
+    name = text.strip().replace('"', '').replace("'", "")
     if not name.startswith("Operation"):
         name = f"Operation {name}"
     return {"name": name}
@@ -472,116 +354,294 @@ def _log_progress(completed: int, total: int) -> None:
     print(f"[case-gen] {completed}/{total}", flush=True)
 
 
-@app.post("/generate-exercise")
-async def generate_exercise(config: ExerciseConfig):
-    try:
-        # ---- 1. Build per-day plans from inputs ----
-        plans = []
-        for day in config.days:
-            plans.append(build_day_plan(
-                day_number=day.day_number,
-                tactical_setting=day.tactical_setting,
-                total_patients=day.total_patients,
-                night_ops=day.night_ops,
-                mascal=day.mascal,
-                mascal_etiology=day.mascal_etiology,
-                mascal_patients=day.mascal_patients,
-                cbrn=day.cbrn,
-                detainee_ops=day.detainee_ops,
-                threat_level=config.threat_level,
-                environment=config.environment,
-                region=config.region,
-                selected_footprint=config.selected_footprint,
-                selected_mets=config.selected_mets,
-                total_waves=day.total_waves,
-            ))
+async def _run_exercise_pipeline(
+    config: ExerciseConfig,
+    *,
+    on_case_progress=None,
+    on_phase=None,
+) -> Dict[str, Any]:
+    """Plan -> generate cases -> schedule -> docs. No HTTP, no DB, no ZIP.
 
-        # ---- 2. Generate cases via the provider, batched + concurrent + with retry ----
-        provider = get_case_provider()
-        result = await generate_all_cases(
-            plans,
-            provider,
+    Returns artifacts the caller can either ZIP up (legacy /generate-exercise)
+    or persist + serve via /jobs.
+    """
+    if on_phase:
+        await on_phase("planning")
+
+    plans = []
+    for day in config.days:
+        plans.append(build_day_plan(
+            day_number=day.day_number,
+            tactical_setting=day.tactical_setting,
+            total_patients=day.total_patients,
+            night_ops=day.night_ops,
+            mascal=day.mascal,
+            mascal_etiology=day.mascal_etiology,
+            mascal_patients=day.mascal_patients,
+            cbrn=day.cbrn,
+            detainee_ops=day.detainee_ops,
+            threat_level=config.threat_level,
             environment=config.environment,
             region=config.region,
-            bucket_to_case_inputs=_bucket_to_case_inputs,
-            fallback_factory=_fallback_for,
-            batch_size=int(os.getenv("CASE_BATCH_SIZE", "5")),
-            concurrency=int(os.getenv("CASE_BATCH_CONCURRENCY", "3")),
-            on_progress=_log_progress,
+            selected_footprint=config.selected_footprint,
+            selected_mets=config.selected_mets,
+            total_waves=day.total_waves,
+        ))
+
+    if on_phase:
+        await on_phase("generating_cases")
+    provider = get_case_provider()
+    result = await generate_all_cases(
+        plans,
+        provider,
+        environment=config.environment,
+        region=config.region,
+        bucket_to_case_inputs=_bucket_to_case_inputs,
+        fallback_factory=_fallback_for,
+        batch_size=int(os.getenv("CASE_BATCH_SIZE", "5")),
+        concurrency=int(os.getenv("CASE_BATCH_CONCURRENCY", "3")),
+        on_progress=on_case_progress or _log_progress,
+    )
+    cases_by_day = result.cases_by_day
+    flat_cases: List[Dict] = []
+    for plan in plans:
+        flat_cases.extend(cases_by_day.get(plan.day_number, []))
+
+    events = build_schedule(plans, cases_by_day, specialists=config.specialists)
+    schedule = [e.to_dict() for e in events]
+
+    if on_phase:
+        await on_phase("generating_docs")
+    warno = await generate_warno(config)
+    annex = await generate_annex_q(config)
+    medroe = await generate_medroe(config)
+
+    generation_summary = {
+        "total_requested": result.total_requested,
+        "total_returned": result.total_returned,
+        "total_fallback": result.total_fallback,
+        "errors": [
+            {
+                "key": list(e.key),
+                "case_type": e.case_type,
+                "mechanism": e.mechanism,
+                "category": e.category,
+                "error": e.error[:300],
+                "attempts": e.attempts,
+            }
+            for e in result.errors
+        ],
+    }
+
+    return {
+        "cases": flat_cases,
+        "schedule": schedule,
+        "warno": warno,
+        "annex": annex,
+        "medroe": medroe,
+        "generation_summary": generation_summary,
+    }
+
+
+def _save_exercise_to_db(config: ExerciseConfig, artifacts: Dict[str, Any]) -> Optional[int]:
+    """Persist artifacts to the exercises table. Returns the new id, or None
+    if no DB is configured."""
+    if not SessionLocal:
+        return None
+    db = SessionLocal()
+    try:
+        ex = Exercise(
+            name=config.exercise_name,
+            config=config.dict(),
+            cases=artifacts["cases"],
+            msel_data=artifacts["schedule"],
+            warno_text=artifacts["warno"],
+            annex_q_text=artifacts["annex"],
+            medroe_text=artifacts["medroe"],
         )
-        cases_by_day = result.cases_by_day
-        flat_cases: List[Dict] = []
-        for plan in plans:
-            flat_cases.extend(cases_by_day.get(plan.day_number, []))
+        db.add(ex)
+        db.commit()
+        db.refresh(ex)
+        return ex.id
+    finally:
+        db.close()
 
-        # ---- 3. Build schedule (no global shuffle; cases stay on their day) ----
-        events = build_schedule(plans, cases_by_day, specialists=config.specialists)
-        schedule = [e.to_dict() for e in events]
 
-        warno = generate_warno(config)
-        annex = generate_annex_q(config)
-        medroe = generate_medroe(config)
-        cases = flat_cases
+def _build_zip(config: ExerciseConfig, artifacts: Dict[str, Any]) -> BytesIO:
+    zip_buf = BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(artifacts["schedule"], config).getvalue())
+        zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), artifacts["warno"]).getvalue())
+        zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", artifacts["annex"]).getvalue())
+        zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), artifacts["medroe"]).getvalue())
+        zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(artifacts["cases"], config).getvalue())
+        zf.writestr(
+            f"{config.exercise_name}_generation_summary.json",
+            json.dumps(artifacts["generation_summary"], indent=2),
+        )
+    zip_buf.seek(0)
+    return zip_buf
 
-        # Surface generation issues so a degraded ZIP doesn't masquerade as success.
-        generation_summary = {
-            "total_requested": result.total_requested,
-            "total_returned": result.total_returned,
-            "total_fallback": result.total_fallback,
-            "errors": [
-                {
-                    "key": list(e.key),
-                    "case_type": e.case_type,
-                    "mechanism": e.mechanism,
-                    "category": e.category,
-                    "error": e.error[:300],
-                    "attempts": e.attempts,
-                }
-                for e in result.errors
-            ],
-        }
-        
-        # Save
-        if SessionLocal:
-            db = SessionLocal()
-            try:
-                ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases, msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe)
-                db.add(ex)
-                db.commit()
-            finally:
-                db.close()
-        
-        # ZIP
-        zip_buf = BytesIO()
-        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(schedule, config).getvalue())
-            zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), warno).getvalue())
-            zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
-            zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
-            zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
-            # Generation summary for transparency — half-degraded ZIPs no longer
-            # masquerade as success.
-            zf.writestr(
-                f"{config.exercise_name}_generation_summary.json",
-                json.dumps(generation_summary, indent=2),
-            )
-        zip_buf.seek(0)
 
+def _summary_headers(generation_summary: Dict[str, Any], filename: str) -> Dict[str, str]:
+    return {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Generation-Total": str(generation_summary["total_requested"]),
+        "X-Generation-Returned": str(generation_summary["total_returned"]),
+        "X-Generation-Fallback": str(generation_summary["total_fallback"]),
+        "X-Generation-Errors": str(len(generation_summary["errors"])),
+    }
+
+
+@app.post("/generate-exercise")
+async def generate_exercise(config: ExerciseConfig):
+    """Legacy synchronous endpoint. Builds the entire package in one request.
+    For long exercises prefer POST /jobs/generate-exercise (Phase 4)."""
+    try:
+        artifacts = await _run_exercise_pipeline(config)
+        _save_exercise_to_db(config, artifacts)
+        zip_buf = _build_zip(config, artifacts)
         return Response(
             zip_buf.getvalue(),
-            headers={
-                "Content-Disposition": f'attachment; filename="{config.exercise_name}_Package.zip"',
-                "X-Generation-Total": str(generation_summary["total_requested"]),
-                "X-Generation-Returned": str(generation_summary["total_returned"]),
-                "X-Generation-Fallback": str(generation_summary["total_fallback"]),
-                "X-Generation-Errors": str(len(generation_summary["errors"])),
-            },
+            headers=_summary_headers(
+                artifacts["generation_summary"],
+                f"{config.exercise_name}_Package.zip",
+            ),
             media_type="application/zip",
         )
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Job-mode endpoints
+# ---------------------------------------------------------------------------
+
+async def _run_exercise_job_worker(job_id: str) -> None:
+    """Background worker. Acquires the global semaphore so only one job runs
+    at a time, drives the pipeline, and updates the job row as it goes."""
+    store = get_job_store()
+    sem = get_job_semaphore()
+    record = await store.get(job_id)
+    if record is None:
+        print(f"[job {job_id}] vanished before worker could pick it up", flush=True)
+        return
+    try:
+        config = ExerciseConfig(**record.config)
+    except Exception as e:
+        await store.mark_failed(job_id, f"invalid config: {e}")
+        return
+
+    async with sem:
+        await store.mark_running(job_id)
+        loop = asyncio.get_running_loop()
+
+        def on_case_progress(completed: int, total: int) -> None:
+            # case_generator's callback contract is sync; bridge to the async
+            # store via create_task so we don't block the batch loop.
+            asyncio.run_coroutine_threadsafe(
+                store.update_progress(job_id, completed=completed),
+                loop,
+            )
+
+        async def on_phase(phase: str) -> None:
+            await store.update_progress(job_id, current_phase=phase)
+
+        try:
+            artifacts = await _run_exercise_pipeline(
+                config,
+                on_case_progress=on_case_progress,
+                on_phase=on_phase,
+            )
+            await on_phase("packaging")
+            exercise_id = await asyncio.to_thread(_save_exercise_to_db, config, artifacts)
+
+            summary = artifacts["generation_summary"]
+            if summary.get("errors"):
+                await store.append_errors(job_id, summary["errors"])
+            await store.mark_complete(
+                job_id,
+                exercise_id=exercise_id,
+                generation_summary=summary,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            await store.mark_failed(job_id, str(e)[:1000])
+
+
+@app.post("/jobs/generate-exercise")
+async def queue_exercise_job(config: ExerciseConfig, background_tasks: BackgroundTasks):
+    """Queue an async exercise generation. Returns immediately with the job id.
+    Poll GET /jobs/{id} for progress; download with GET /jobs/{id}/download
+    once status == 'complete'."""
+    total_cases = sum(d.total_patients for d in config.days)
+    store = get_job_store()
+    record = await store.create(total_cases=total_cases, config=config.dict())
+    background_tasks.add_task(_run_exercise_job_worker, record.id)
+    return {
+        "job_id": record.id,
+        "status": record.status,
+        "total_cases": record.total_cases,
+        "current_phase": record.current_phase,
+        "created_at": record.created_at.isoformat(),
+    }
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str):
+    record = await get_job_store().get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {
+        "job_id": record.id,
+        "status": record.status,
+        "current_phase": record.current_phase,
+        "total_cases": record.total_cases,
+        "completed_cases": record.completed_cases,
+        "progress": round(record.progress, 4),
+        "errors_count": len(record.errors),
+        "exercise_id": record.exercise_id,
+        "error_message": record.error_message,
+        "generation_summary": record.generation_summary,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+@app.get("/jobs")
+async def list_jobs(limit: int = 20):
+    records = await get_job_store().list_recent(limit=limit)
+    return {
+        "jobs": [
+            {
+                "job_id": r.id,
+                "status": r.status,
+                "current_phase": r.current_phase,
+                "total_cases": r.total_cases,
+                "completed_cases": r.completed_cases,
+                "progress": round(r.progress, 4),
+                "exercise_id": r.exercise_id,
+                "created_at": r.created_at.isoformat(),
+                "updated_at": r.updated_at.isoformat(),
+            }
+            for r in records
+        ]
+    }
+
+
+@app.get("/jobs/{job_id}/download")
+async def download_job_zip(job_id: str):
+    """Serve the ZIP for a completed job. Returns 409 if the job hasn't
+    finished yet, 404 if the job/exercise doesn't exist."""
+    record = await get_job_store().get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if record.status != JobStatus.complete:
+        raise HTTPException(status_code=409, detail=f"job not complete (status={record.status.value})")
+    if record.exercise_id is None or not SessionLocal:
+        raise HTTPException(status_code=404, detail="no exercise persisted for this job")
+    return await download_exercise(record.exercise_id)
 
 @app.get("/exercises")
 async def list_exercises():
