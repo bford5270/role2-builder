@@ -5,14 +5,37 @@ Why an interface: the long-term home of this product is AWS GovCloud, which
 cannot call the public Gemini API. Bedrock-Claude (FedRAMP High / IL5) will be
 the GovCloud target. Same prompts, same response shape, different transport.
 
-Methods are async because Phase 3 will fan them out via asyncio.Semaphore.
+Methods are async so the case_generator can fan them out via asyncio.Semaphore.
 """
 
 from __future__ import annotations
 
 import abc
+import asyncio
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class BatchItem:
+    """One requested case in a generate_batch call.
+
+    `key` is opaque to the provider; the case_generator uses it to map results
+    back to the right (day_number, bucket_index, patient_index) slot.
+
+    `category` is the planner bucket category (e.g. trauma_surgical, dnbi);
+    providers ignore it but the fallback_factory uses it to choose the right
+    template when generation fails.
+    """
+    key: Any
+    case_type: str
+    mechanism: str
+    environment: str
+    region: str
+    phases: List[str]
+    target_triage: Optional[str] = None
+    category: str = ""
 
 
 class CaseProvider(abc.ABC):
@@ -36,6 +59,29 @@ class CaseProvider(abc.ABC):
     @abc.abstractmethod
     async def generate_text(self, prompt: str, *, system: Optional[str] = None) -> str:
         """Free-text generation for WARNO / Annex Q / MEDROE."""
+
+    async def generate_batch(self, items: List[BatchItem]) -> List[Dict[str, Any]]:
+        """Generate N cases in one go.
+
+        Default implementation fans out to generate_case in parallel. Concrete
+        providers (e.g. Gemini, Bedrock) should override this to send a single
+        prompt that returns a JSON array of N cases — fewer round trips.
+
+        Returns cases in the same order as `items`. Failures bubble up as
+        exceptions; the case_generator handles retry + fallback.
+        """
+        coros = [
+            self.generate_case(
+                case_type=item.case_type,
+                mechanism=item.mechanism,
+                environment=item.environment,
+                region=item.region,
+                phases=item.phases,
+                target_triage=item.target_triage,
+            )
+            for item in items
+        ]
+        return await asyncio.gather(*coros)
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,50 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Phase 3 complete: batched case generation
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Phase:** Phase 3 — Batched Case Generation
+**Status going in:** Phase 2 committed (cc59248) with 61 tests green. Schedule was correct but case generation was still 1 sequential Gemini call per case inside one HTTP request.
+
+**Open questions answered (defaults, noted for confirmation):**
+- *Sync ZIP vs job-mode*: keeping the sync `/generate-exercise` endpoint for Phase 3; `/jobs` lands in Phase 4. Smaller blast radius, sticks to STRATEGY.md plan.
+- *Footprint suppression*: existing planner-side category demotion (trauma_surgical → trauma_non_surgical when no surgical capability) is sufficient; the prompt-level "evac required, no DCS available" refinement is deferred — not blocking.
+
+**Done this session:**
+- `backend/providers/base.py`: added `BatchItem` dataclass and async `generate_batch()` on the `CaseProvider` ABC. Default impl fans out single calls via `asyncio.gather` so every provider gets batching for free; concrete providers can override for one-prompt-N-cases.
+- `backend/prompts.py`: added `case_batch_prompt(items)` that asks the model to return `{"cases": [...]}` with one numbered block per item.
+- `backend/providers/gemini.py`: overrode `generate_batch()` — single Gemini call returning a JSON array of N cases, parsed and stamped with stable IDs.
+- `backend/case_generator.py` (new): orchestrator with:
+  - Item materialization from `(plan, bucket, count)` keyed on `(day_number, bucket_pos, p_idx)`.
+  - Batches don't cross day boundaries — keeps progress reporting honest and contains blast radius.
+  - `asyncio.Semaphore(concurrency)` bounds in-flight batches (default 3).
+  - `_run_batch_with_retry()`: retries the batch path up to N times with exponential backoff, then falls through to per-item single calls (also with retry), then to the caller-provided `fallback_factory`.
+  - Structured `GenerationError` records every failure that hit the fallback path.
+  - `GenerationResult` carries `total_requested`, `total_returned`, `total_fallback`, and the error list.
+- `main.generate_exercise` rewired:
+  - Replaces sequential per-bucket loop with `await generate_all_cases(plans, provider, ...)`.
+  - `CASE_BATCH_SIZE` (default 5) and `CASE_BATCH_CONCURRENCY` (default 3) env vars.
+  - Embeds `<exercise>_generation_summary.json` in the ZIP so a half-degraded package no longer looks like success.
+  - Adds response headers `X-Generation-Total / Returned / Fallback / Errors` for the frontend to surface a warning.
+- `backend/tests/test_case_generator.py` (new): 8 tests covering happy path, progress callback, batch retry → single-call fall-through, total-failure → fallback factory, no-fallback → missing cases (so A13 in the schedule builder catches it), and direct `_run_batch_with_retry` cases.
+- 69 tests passing total in ~0.6s (added `initial_backoff=0.0` knob so retry tests run instantly).
+
+**Hot path improvement for the GovCloud transition:** every model call from `main` now goes through `provider.generate_batch` or `provider.generate_case`. To run in GovCloud, only `BedrockCaseProvider` needs to be implemented — main.py and case_generator.py don't change.
+
+**Next (Phase 4 — Background Job Infrastructure):**
+- New SQLAlchemy `ExerciseJob` model (`status`, `total_cases`, `completed_cases`, `current_phase`, `errors` JSON, `exercise_id`, timestamps).
+- `POST /generate-exercise` returns `{job_id, total}` immediately and queues the work via `BackgroundTasks`.
+- `GET /jobs/{id}` returns current progress.
+- Worker hooks `on_progress` to UPDATE the job row each batch.
+- Frontend (Phase 5) polls `/jobs/{id}` for the real progress bar.
+
+**Open questions / blockers:**
+- Confirm Phase 3 defaults (sync ZIP, deferred evac-flag prompt) are fine; otherwise revisit before Phase 4.
+- Same as before: SME review of matrices, canonical MET list, Bedrock model id pinning at GovCloud onboarding.
+
+---
+
 ## 2026-04-29 (continued) — Phase 2 complete: schedule rewrite
 **Branch:** `claude/review-schedule-issues-pjHcI`
 **Phase:** Phase 2 — Schedule Builder Rewrite

@@ -18,10 +18,12 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from backend.providers.base import inject_stable_ids
+from backend.providers import get_case_provider
+from backend.providers.base import BatchItem, inject_stable_ids
 from backend.casualty_planner import EtiologyBucket, build_day_plan
 from backend.schedule_builder import build_schedule
 from backend.matrices import TRAUMA_BY_ETIOLOGY, GENERAL_TRAUMA
+from backend.case_generator import generate_all_cases
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
@@ -456,6 +458,20 @@ async def generate_name_endpoint(data: dict):
         name = f"Operation {name}"
     return {"name": name}
 
+def _trauma_categories():
+    return {"trauma_surgical", "trauma_non_surgical", "cbrn_combined", "detainee_trauma"}
+
+
+def _fallback_for(item: BatchItem) -> Dict:
+    is_trauma = item.category in _trauma_categories()
+    return create_fallback_case(item.case_type, item.mechanism, is_trauma)
+
+
+def _log_progress(completed: int, total: int) -> None:
+    # Phase 4 will hook this to the ExerciseJob row; for now, log to stdout.
+    print(f"[case-gen] {completed}/{total}", flush=True)
+
+
 @app.post("/generate-exercise")
 async def generate_exercise(config: ExerciseConfig):
     try:
@@ -480,25 +496,23 @@ async def generate_exercise(config: ExerciseConfig):
                 total_waves=day.total_waves,
             ))
 
-        # ---- 2. Generate cases per bucket, keyed by day_number ----
-        cases_by_day: Dict[int, List[Dict]] = {}
+        # ---- 2. Generate cases via the provider, batched + concurrent + with retry ----
+        provider = get_case_provider()
+        result = await generate_all_cases(
+            plans,
+            provider,
+            environment=config.environment,
+            region=config.region,
+            bucket_to_case_inputs=_bucket_to_case_inputs,
+            fallback_factory=_fallback_for,
+            batch_size=int(os.getenv("CASE_BATCH_SIZE", "5")),
+            concurrency=int(os.getenv("CASE_BATCH_CONCURRENCY", "3")),
+            on_progress=_log_progress,
+        )
+        cases_by_day = result.cases_by_day
         flat_cases: List[Dict] = []
         for plan in plans:
-            day_cases: List[Dict] = []
-            for bucket in plan.etiology_buckets:
-                for _ in range(bucket.count):
-                    case_type, mech = _bucket_to_case_inputs(bucket, config.environment)
-                    is_trauma = bucket.category in (
-                        "trauma_surgical", "trauma_non_surgical",
-                        "cbrn_combined", "detainee_trauma",
-                    )
-                    try:
-                        case = generate_case_sync(case_type, mech, config.environment, config.region)
-                    except Exception:
-                        case = create_fallback_case(case_type, mech, is_trauma)
-                    day_cases.append(case)
-            cases_by_day[plan.day_number] = day_cases
-            flat_cases.extend(day_cases)
+            flat_cases.extend(cases_by_day.get(plan.day_number, []))
 
         # ---- 3. Build schedule (no global shuffle; cases stay on their day) ----
         events = build_schedule(plans, cases_by_day, specialists=config.specialists)
@@ -508,6 +522,24 @@ async def generate_exercise(config: ExerciseConfig):
         annex = generate_annex_q(config)
         medroe = generate_medroe(config)
         cases = flat_cases
+
+        # Surface generation issues so a degraded ZIP doesn't masquerade as success.
+        generation_summary = {
+            "total_requested": result.total_requested,
+            "total_returned": result.total_returned,
+            "total_fallback": result.total_fallback,
+            "errors": [
+                {
+                    "key": list(e.key),
+                    "case_type": e.case_type,
+                    "mechanism": e.mechanism,
+                    "category": e.category,
+                    "error": e.error[:300],
+                    "attempts": e.attempts,
+                }
+                for e in result.errors
+            ],
+        }
         
         # Save
         if SessionLocal:
@@ -527,9 +559,25 @@ async def generate_exercise(config: ExerciseConfig):
             zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
             zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
             zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
+            # Generation summary for transparency — half-degraded ZIPs no longer
+            # masquerade as success.
+            zf.writestr(
+                f"{config.exercise_name}_generation_summary.json",
+                json.dumps(generation_summary, indent=2),
+            )
         zip_buf.seek(0)
-        
-        return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
+
+        return Response(
+            zip_buf.getvalue(),
+            headers={
+                "Content-Disposition": f'attachment; filename="{config.exercise_name}_Package.zip"',
+                "X-Generation-Total": str(generation_summary["total_requested"]),
+                "X-Generation-Returned": str(generation_summary["total_returned"]),
+                "X-Generation-Fallback": str(generation_summary["total_fallback"]),
+                "X-Generation-Errors": str(len(generation_summary["errors"])),
+            },
+            media_type="application/zip",
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -60,3 +60,38 @@ def case_user_prompt(*, case_type: str, mechanism: str, environment: str, region
         f"{triage_instr}\n"
         "Generate the case now."
     )
+
+
+def case_batch_prompt(items: list) -> str:
+    """Prompt for N cases in one shot. Returns instructions to emit a JSON
+    object {"cases": [..N items..]} where each item matches CASE_SYSTEM_PROMPT.
+
+    `items` is a list of BatchItem; we render one numbered block per item so
+    the model can process them serially without losing track.
+    """
+    blocks = []
+    for i, item in enumerate(items, start=1):
+        if "DCS" in item.phases:
+            phase_instr = "Surgery REQUIRED. Include DCR, DCS, PCC."
+        else:
+            phase_instr = "No surgery. DCR + PCC only. Set dcs to null."
+        triage_instr = f"Triage category: {item.target_triage}." if item.target_triage else ""
+        blocks.append(
+            f"--- CASE {i} ---\n"
+            f"CONTEXT: Role 2 in {item.environment}, {item.region}.\n"
+            f"CASE: {item.case_type}\n"
+            f"MECHANISM: {item.mechanism}\n"
+            f"{phase_instr}\n"
+            f"{triage_instr}".rstrip()
+        )
+
+    body = "\n\n".join(blocks)
+    return (
+        f"Generate {len(items)} distinct simulation cases. Each case follows the JSON STRUCTURE "
+        f"defined in your system instructions.\n\n"
+        f"Return a single JSON object with the shape:\n"
+        f'{{"cases": [<case 1>, <case 2>, ..., <case {len(items)}>]}}\n\n'
+        f"Case order in the array MUST match the case numbers below. Do not skip cases. "
+        f"Do not include any prose outside the JSON.\n\n"
+        f"{body}"
+    )

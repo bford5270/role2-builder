@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from google import genai
 
-from ..prompts import CASE_SYSTEM_PROMPT, case_user_prompt
-from .base import CaseProvider, inject_stable_ids
+from ..prompts import CASE_SYSTEM_PROMPT, case_batch_prompt, case_user_prompt
+from .base import BatchItem, CaseProvider, inject_stable_ids
 
 _MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
@@ -66,6 +66,46 @@ class GeminiCaseProvider(CaseProvider):
             config=config,
         )
         return response.text
+
+    async def generate_batch(self, items: List[BatchItem]) -> List[Dict[str, Any]]:
+        """One Gemini call returning N cases as a JSON array."""
+        if not items:
+            return []
+        if len(items) == 1:
+            # No batching benefit — fall back to single-case path.
+            item = items[0]
+            return [await self.generate_case(
+                case_type=item.case_type,
+                mechanism=item.mechanism,
+                environment=item.environment,
+                region=item.region,
+                phases=item.phases,
+                target_triage=item.target_triage,
+            )]
+
+        prompt = case_batch_prompt(items)
+        response = await asyncio.to_thread(
+            self._client.models.generate_content,
+            model=_MODEL,
+            contents=prompt,
+            config={
+                "system_instruction": CASE_SYSTEM_PROMPT,
+                "response_mime_type": "application/json",
+            },
+        )
+        parsed = _parse_json(response.text)
+        cases = parsed.get("cases") if isinstance(parsed, dict) else None
+        if not isinstance(cases, list) or len(cases) != len(items):
+            raise ValueError(
+                f"Gemini batch returned {len(cases) if isinstance(cases, list) else 'invalid'} "
+                f"cases, expected {len(items)}"
+            )
+        out: List[Dict[str, Any]] = []
+        for item, case in zip(items, cases):
+            if item.target_triage:
+                case["triage_category"] = item.target_triage
+            out.append(inject_stable_ids(case))
+        return out
 
 
 def _parse_json(text: str) -> Dict[str, Any]:
