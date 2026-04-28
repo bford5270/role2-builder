@@ -768,10 +768,13 @@ export default function SetupPage() {
         </div>
       </section>
 
-      {/* History Link */}
-      <div className="mt-4 text-center">
+      {/* History + Settings Links */}
+      <div className="mt-4 text-center space-x-6">
         <a href="/history" className="text-blue-600 hover:text-blue-700 underline text-sm font-medium">
           View Past Exercises →
+        </a>
+        <a href="/settings/matrices" className="text-blue-600 hover:text-blue-700 underline text-sm font-medium">
+          Matrix Configuration →
         </a>
       </div>
     </div>

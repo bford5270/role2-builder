@@ -18,6 +18,50 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Phase 6b complete: matrix configuration UI
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Phase:** Phase 6b — Matrix Configuration (frontend)
+**Status going in:** Phase 6a committed (c8c9e9e), 111 tests green. Backend can read/write/reset matrix overrides and apply presets, but there's no UI for it.
+
+**Done this session:**
+- New `src/app/settings/matrices/page.tsx`:
+  - Loads `GET /settings/matrices` and `GET /settings/matrices/presets` on mount.
+  - Maintains an editable `draft` MatrixView; cells with values that differ from defaults highlight in amber.
+  - Section components:
+    - `SectionTraumaRatio`: per-tactical-setting numeric editor (0–1).
+    - `SectionTriageDist`: T1/T2/T3/T4 table per setting with a live row sum that turns red when ≠ 1.0.
+    - `SectionMascalDist`: same shape for the MASCAL override row.
+    - `SectionThreatShift`: deltas per Low/Medium/High (trauma_ratio, t1_pp..t4_pp).
+    - `SectionStringLists`: tag-style add/remove editor used three times (etiology_by_setting, dnbi_by_region, cbrn_etiologies).
+  - **Diff-and-PUT save semantics**: `onSave` compares the draft to the loaded defaults and only sends changed fields as overrides. Saving with no diffs is a no-op + status message.
+  - Preset selector dropdown applies via `POST /settings/matrices/presets/{name}/apply`.
+  - "Reset to defaults" button calls `DELETE /settings/matrices`.
+  - Status / error banners.
+- `src/app/page.tsx`: added a "Matrix Configuration →" link alongside the existing "View Past Exercises →" link in the home-page footer.
+- `tsc --noEmit` is clean. Couldn't run `next build` end-to-end (sandbox blocks Google Fonts) — same constraint as Phase 5.
+
+**Frontend design notes:**
+- The page deliberately edits the merged view (not the sparse overrides) because that's what instructors think in. The diff-on-save pattern means we don't echo defaults back to the server, so a partial preset stays partial after a manual edit-and-save round trip.
+- "Default" highlighting (amber border on changed cells) gives a quick visual diff against the factory baseline — useful when a preset is loaded.
+
+**Phase 6 inventory check:**
+- ✅ Headlines + list editors all editable.
+- ✅ Single global override + per-exercise snapshot (snapshot saved in Phase 6a).
+- ✅ Open access for now (no auth — gap documented).
+- ✅ Reset + named presets (3 shipped: usmc_default, permissive_humanitarian, high_intensity_contingency).
+
+**Next (carry-forwards from earlier devlog entries):**
+- SME review of the draft matrices in `matrices.py` AND the preset bundles before any of this is held out as authoritative.
+- Canonical MET list — the `MET_BIAS` table is still illustrative.
+- Bedrock model id + region pinning at GovCloud onboarding (the `BedrockCaseProvider` stub is ready).
+- Phase 7 (tablet runner) remains future work — schema-ready (stable IDs landed in Phase 1, matrix snapshot landed in Phase 6a).
+
+**Open questions / blockers:**
+- No new ones from Phase 6b.
+
+---
+
 ## 2026-04-29 (continued) — Phase 6a complete: matrix override backend + presets
 
 **Branch:** `claude/review-schedule-issues-pjHcI`
