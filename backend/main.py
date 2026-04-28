@@ -359,14 +359,22 @@ async def _run_exercise_pipeline(
     *,
     on_case_progress=None,
     on_phase=None,
+    is_cancelled=None,
 ) -> Dict[str, Any]:
     """Plan -> generate cases -> schedule -> docs. No HTTP, no DB, no ZIP.
 
     Returns artifacts the caller can either ZIP up (legacy /generate-exercise)
-    or persist + serve via /jobs.
+    or persist + serve via /jobs. If `is_cancelled()` returns True between
+    phases, the pipeline returns early with `cancelled=True` and whatever
+    work has completed so far.
     """
+    async def _cancelled() -> bool:
+        return bool(is_cancelled is not None and await is_cancelled())
+
     if on_phase:
         await on_phase("planning")
+    if await _cancelled():
+        return {"cancelled": True}
 
     plans = []
     for day in config.days:
@@ -401,7 +409,11 @@ async def _run_exercise_pipeline(
         batch_size=int(os.getenv("CASE_BATCH_SIZE", "5")),
         concurrency=int(os.getenv("CASE_BATCH_CONCURRENCY", "3")),
         on_progress=on_case_progress or _log_progress,
+        is_cancelled=is_cancelled,
     )
+    if result.cancelled or await _cancelled():
+        return {"cancelled": True, "partial_cases": result.total_returned}
+
     cases_by_day = result.cases_by_day
     flat_cases: List[Dict] = []
     for plan in plans:
@@ -412,6 +424,8 @@ async def _run_exercise_pipeline(
 
     if on_phase:
         await on_phase("generating_docs")
+    if await _cancelled():
+        return {"cancelled": True, "partial_cases": result.total_returned}
     warno = await generate_warno(config)
     annex = await generate_annex_q(config)
     medroe = await generate_medroe(config)
@@ -440,6 +454,7 @@ async def _run_exercise_pipeline(
         "annex": annex,
         "medroe": medroe,
         "generation_summary": generation_summary,
+        "cancelled": False,
     }
 
 
@@ -499,6 +514,11 @@ async def generate_exercise(config: ExerciseConfig):
     For long exercises prefer POST /jobs/generate-exercise (Phase 4)."""
     try:
         artifacts = await _run_exercise_pipeline(config)
+        # Sync path can't be cancelled (no separate cancel endpoint binds to
+        # it), but stay defensive in case callers pass an is_cancelled hook
+        # via some future plumbing.
+        if artifacts.get("cancelled"):
+            raise HTTPException(status_code=499, detail="exercise generation cancelled")
         _save_exercise_to_db(config, artifacts)
         zip_buf = _build_zip(config, artifacts)
         return Response(
@@ -509,6 +529,8 @@ async def generate_exercise(config: ExerciseConfig):
             ),
             media_type="application/zip",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -534,26 +556,46 @@ async def _run_exercise_job_worker(job_id: str) -> None:
         return
 
     async with sem:
+        # If the user cancelled while the job was queued, honor it without
+        # touching the LLM at all.
+        latest = await store.get(job_id)
+        if latest and latest.status == JobStatus.cancelled:
+            return
+
         await store.mark_running(job_id)
         loop = asyncio.get_running_loop()
 
         def on_case_progress(completed: int, total: int) -> None:
             # case_generator's callback contract is sync; bridge to the async
-            # store via create_task so we don't block the batch loop.
+            # store via run_coroutine_threadsafe so we don't block the batch loop.
             asyncio.run_coroutine_threadsafe(
                 store.update_progress(job_id, completed=completed),
                 loop,
             )
 
         async def on_phase(phase: str) -> None:
+            # Avoid clobbering current_phase='cancelled' with a stale phase update.
+            cur = await store.get(job_id)
+            if cur and cur.status == JobStatus.cancelled:
+                return
             await store.update_progress(job_id, current_phase=phase)
+
+        async def is_cancelled() -> bool:
+            cur = await store.get(job_id)
+            return cur is not None and cur.status == JobStatus.cancelled
 
         try:
             artifacts = await _run_exercise_pipeline(
                 config,
                 on_case_progress=on_case_progress,
                 on_phase=on_phase,
+                is_cancelled=is_cancelled,
             )
+            if artifacts.get("cancelled"):
+                # Worker honored the cancel request; status was already set to
+                # cancelled by the request_cancel call. Just leave it there.
+                return
+
             await on_phase("packaging")
             exercise_id = await asyncio.to_thread(_save_exercise_to_db, config, artifacts)
 
@@ -627,6 +669,31 @@ async def list_jobs(limit: int = 20):
             }
             for r in records
         ]
+    }
+
+
+@app.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """Request graceful cancellation. The worker checks status between batches
+    so the in-flight LLM call (if any) finishes before the worker exits.
+
+    Returns 404 if the job doesn't exist, 409 if the job already finished
+    (complete/failed), and {accepted: True} on successful cancel."""
+    store = get_job_store()
+    record = await store.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    accepted = await store.request_cancel(job_id)
+    if not accepted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"job not cancellable in current state ({record.status.value})",
+        )
+    fresh = await store.get(job_id)
+    return {
+        "accepted": True,
+        "status": fresh.status if fresh else JobStatus.cancelled,
+        "current_phase": fresh.current_phase if fresh else "cancelled",
     }
 
 

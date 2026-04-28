@@ -94,6 +94,37 @@ class TestInMemoryJobStore:
         # newest first
         assert recents[0].id == ids[-1]
 
+    def test_request_cancel_when_queued(self):
+        store = InMemoryJobStore()
+        rec = asyncio.run(store.create(total_cases=5, config={}))
+        accepted = asyncio.run(store.request_cancel(rec.id))
+        assert accepted is True
+        cur = asyncio.run(store.get(rec.id))
+        assert cur.status == JobStatus.cancelled
+
+    def test_request_cancel_when_running(self):
+        store = InMemoryJobStore()
+        rec = asyncio.run(store.create(total_cases=5, config={}))
+        asyncio.run(store.mark_running(rec.id))
+        accepted = asyncio.run(store.request_cancel(rec.id))
+        assert accepted is True
+        cur = asyncio.run(store.get(rec.id))
+        assert cur.status == JobStatus.cancelled
+
+    def test_request_cancel_after_complete_is_noop(self):
+        store = InMemoryJobStore()
+        rec = asyncio.run(store.create(total_cases=5, config={}))
+        asyncio.run(store.mark_complete(rec.id, exercise_id=1, generation_summary={"errors": []}))
+        accepted = asyncio.run(store.request_cancel(rec.id))
+        assert accepted is False
+        cur = asyncio.run(store.get(rec.id))
+        assert cur.status == JobStatus.complete
+
+    def test_request_cancel_unknown_id_returns_false(self):
+        store = InMemoryJobStore()
+        accepted = asyncio.run(store.request_cancel("does-not-exist"))
+        assert accepted is False
+
 
 # ---------------------------------------------------------------------------
 # End-to-end via FastAPI TestClient
@@ -212,3 +243,40 @@ class TestJobsList:
         r = client.get("/jobs?limit=5")
         assert r.status_code == 200
         assert len(r.json()["jobs"]) >= 3
+
+
+class TestJobCancellation:
+    def test_cancel_endpoint_returns_200_or_409(self, client):
+        """With a fast (stub) provider, the worker may finish before the test
+        can issue the cancel. Either outcome is correct: 200 means cancel won
+        the race; 409 means the job is already complete. The cancel mechanism
+        itself is exercised in test_case_generator_cancellation."""
+        r = client.post("/jobs/generate-exercise", json=SMALL_CONFIG)
+        job_id = r.json()["job_id"]
+        c = client.post(f"/jobs/{job_id}/cancel")
+        assert c.status_code in (200, 409), c.text
+
+    def test_cancel_unknown_job_404(self, client):
+        r = client.post(f"/jobs/{uuid.uuid4()}/cancel")
+        assert r.status_code == 404
+
+    def test_cancel_after_complete_409(self, client):
+        r = client.post("/jobs/generate-exercise", json=SMALL_CONFIG)
+        job_id = r.json()["job_id"]
+        _wait_for_job(client, job_id)  # let it complete
+        r2 = client.post(f"/jobs/{job_id}/cancel")
+        assert r2.status_code == 409
+
+
+def _wait_for_terminal(client: TestClient, job_id: str, timeout: float = 15.0) -> Dict[str, Any]:
+    """Like _wait_for_job, but accepts cancelled too."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        r = client.get(f"/jobs/{job_id}")
+        assert r.status_code == 200
+        last = r.json()
+        if last["status"] in ("complete", "failed", "cancelled"):
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f"job did not reach terminal state within {timeout}s; last={last}")

@@ -218,3 +218,81 @@ class TestDefaultBatch:
         # Each case carries its own stable case_id (no collisions despite parallel calls).
         ids = {c["case_id"] for c in cases}
         assert len(ids) == 3
+
+
+# ---------------------------------------------------------------------------
+# Cancellation
+# ---------------------------------------------------------------------------
+
+class _SlowProvider(CaseProvider):
+    """Stub that pauses each batch so the cancel signal can win the race."""
+
+    name = "slow"
+
+    def __init__(self, delay_s: float = 0.05):
+        self.delay_s = delay_s
+        self._stub = StubCaseProvider()
+        self.batches_started = 0
+        self.batches_completed = 0
+
+    async def generate_case(self, **kwargs):
+        await asyncio.sleep(self.delay_s)
+        return await self._stub.generate_case(**kwargs)
+
+    async def generate_text(self, prompt, *, system=None):
+        return ""
+
+    async def generate_batch(self, items):
+        self.batches_started += 1
+        await asyncio.sleep(self.delay_s)
+        result = await self._stub.generate_batch(items)
+        self.batches_completed += 1
+        return result
+
+
+class TestCaseGeneratorCancellation:
+    def test_cancel_skips_remaining_batches(self):
+        plans = _two_day_plans()  # 14 cases total
+        provider = _SlowProvider(delay_s=0.05)
+        cancel_after_batches = 1
+        flag = {"cancelled": False}
+
+        async def is_cancelled():
+            # Flip cancelled after the first batch completes.
+            return provider.batches_completed >= cancel_after_batches
+
+        async def run():
+            return await generate_all_cases(
+                plans, provider,
+                environment="Desert", region="CENTCOM",
+                bucket_to_case_inputs=_bucket_to_inputs,
+                fallback_factory=_fallback,
+                batch_size=4, concurrency=1,  # serial so the cancel timing is deterministic
+                is_cancelled=is_cancelled,
+                initial_backoff=0.0,
+            )
+
+        result = asyncio.run(run())
+        assert result.cancelled is True
+        # Some batches ran, but not all.
+        assert result.total_returned > 0
+        assert result.total_returned < result.total_requested
+
+    def test_no_cancel_means_full_completion(self):
+        plans = _two_day_plans()
+        provider = _SlowProvider(delay_s=0.001)
+
+        async def is_cancelled():
+            return False
+
+        result = asyncio.run(generate_all_cases(
+            plans, provider,
+            environment="Desert", region="CENTCOM",
+            bucket_to_case_inputs=_bucket_to_inputs,
+            fallback_factory=_fallback,
+            batch_size=4, concurrency=2,
+            is_cancelled=is_cancelled,
+            initial_backoff=0.0,
+        ))
+        assert result.cancelled is False
+        assert result.total_returned == result.total_requested

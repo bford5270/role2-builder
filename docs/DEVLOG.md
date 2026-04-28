@@ -18,6 +18,50 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Phase 5 complete: frontend polling UX + graceful cancel
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Phase:** Phase 5 — Frontend Progress UX (+ graceful cancel mechanism)
+**Status going in:** Phase 4 committed (805d075), 81 tests green. Job-mode endpoints exist on the backend, but `tactical/page.tsx` still POSTs to legacy `/generate-exercise` and shows a static "may take 1-2 minutes" string.
+
+**Decisions confirmed before coding:**
+- Cancel semantics: graceful between batches (worker checks status between batches; in-flight LLM call finishes; clean exit). No hard-stop.
+
+**Done this session:**
+
+*Backend cancel mechanism:*
+- `JobStatus.cancelled` enum value + `CANCELLABLE_STATUSES = {queued, running}` constant.
+- `JobStore.mark_cancelled` and `JobStore.request_cancel` on both `InMemoryJobStore` and `PostgresJobStore`. `request_cancel` returns False if the job is already complete/failed (no-op) or unknown.
+- `case_generator.generate_all_cases`: new `is_cancelled: Callable[[], Awaitable[bool]]` parameter. Each batch coroutine checks before queuing for the semaphore and again after acquiring it; in-flight batches finish (no orphaned LLM calls). `GenerationResult.cancelled` flag bubbles up.
+- `_run_exercise_pipeline`: threads `is_cancelled` through to the case generator, also checks between phases. Returns `{cancelled: True}` on cancel; partial work is discarded (no half-saved Exercise rows).
+- `_run_exercise_job_worker`: binds an `is_cancelled` closure that polls the store; honors a pre-running cancel (won't even start the LLM); preserves `current_phase='cancelled'` against stale phase updates.
+- `POST /jobs/{id}/cancel`: 404 if unknown, 409 if already terminal, 200 + `{accepted, status, current_phase}` on success.
+
+*Frontend (`src/app/tactical/page.tsx`):*
+- POST flow now hits `POST /jobs/generate-exercise` and stores `{job_id, total_cases}`.
+- `pollJob()` polls `GET /jobs/{job_id}` every 2.5s; on `complete` fetches `GET /jobs/{job_id}/download` and triggers the browser download; on `failed` shows `error_message`; on `cancelled` shows a clean cancelled state.
+- Real progress bar driven by `progress` (0–1) plus a `current_phase` label table (`PHASE_LABELS`) covering queued / planning / generating_cases / generating_docs / packaging / complete / failed / cancelled.
+- Cancel button visible while `status` is queued/running; calls `POST /jobs/{job_id}/cancel`; tolerates 409 (job already done — race).
+- Warning banner when `errors_count > 0` so degraded packages no longer look like clean ones; pointer to `generation_summary.json` inside the ZIP.
+- `useEffect` cleanup clears the polling timer on unmount.
+
+*Tests (90 passing total in ~1.5s):*
+- `test_jobs.py`: `request_cancel` lifecycle on InMemoryJobStore (queued, running, complete-noop, unknown). HTTP cancel endpoint races against the fast stub provider, so the test accepts either 200 or 409 — both are correct outcomes.
+- `test_case_generator.py`: new `_SlowProvider` introduces an async sleep so cancel timing is deterministic. Asserts `result.cancelled=True`, `total_returned > 0`, `total_returned < total_requested`. Companion test verifies `is_cancelled=lambda: False` produces full completion.
+
+**Couldn't verify in sandbox:** Next.js production build fails to fetch Google Fonts (no outbound network), so I ran `tsc --noEmit` instead — clean. The frontend will need a manual UX walkthrough on a real browser before declaring Phase 5 done end-to-end.
+
+**Open questions / blockers:**
+- Pydantic v2 + SQLAlchemy 2.0 deprecation warnings still cosmetic.
+- Phase 6 (matrix configuration UI) and the carry-forwards (SME matrix review, canonical METs, Bedrock onboarding) remain.
+
+**Next (Phase 6 — Matrix Configuration UI):**
+- New `/settings/matrices` page with editable trauma-ratio + triage-distribution tables, plus environment/region/etiology pools.
+- Persist overrides in a new `settings` row (or a single global JSON blob).
+- Defaults stay in `matrices.py`; the planner reads UI overrides if present.
+
+---
+
 ## 2026-04-29 (continued) — Phase 4 complete: background job infrastructure
 
 **Branch:** `claude/review-schedule-issues-pjHcI`

@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .casualty_planner import DayPlan, EtiologyBucket
 from .providers.base import BatchItem, CaseProvider
@@ -48,6 +48,7 @@ class GenerationResult:
     total_requested: int = 0
     total_returned: int = 0
     total_fallback: int = 0
+    cancelled: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +123,7 @@ async def generate_all_cases(
     batch_size: int = 5,
     concurrency: int = 3,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    is_cancelled: Optional[Callable[[], Awaitable[bool]]] = None,
     max_attempts: int = _MAX_BATCH_ATTEMPTS,
     initial_backoff: float = _INITIAL_BACKOFF_S,
 ) -> GenerationResult:
@@ -190,7 +192,14 @@ async def generate_all_cases(
 
     async def run_one_batch(batch: List[BatchItem]) -> None:
         nonlocal completed, fallback_count
+        # Graceful cancel: skip batches that haven't started yet. Already
+        # in-flight batches finish (so the LLM call isn't orphaned). Up to ~1
+        # batch worth of latency before the worker sees the cancel.
+        if is_cancelled is not None and await is_cancelled():
+            return
         async with sem:
+            if is_cancelled is not None and await is_cancelled():
+                return
             cases, batch_errors = await _run_batch_with_retry(
                 provider, batch,
                 max_attempts=max_attempts,
@@ -240,10 +249,12 @@ async def generate_all_cases(
                     day_cases.append(got)
         cases_by_day[plan.day_number] = day_cases
 
+    cancelled_now = bool(is_cancelled is not None and await is_cancelled())
     return GenerationResult(
         cases_by_day=cases_by_day,
         errors=errors,
         total_requested=total,
         total_returned=sum(len(v) for v in cases_by_day.values()),
         total_fallback=fallback_count,
+        cancelled=cancelled_now,
     )

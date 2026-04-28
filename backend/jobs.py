@@ -27,6 +27,12 @@ class JobStatus(str, enum.Enum):
     running = "running"
     complete = "complete"
     failed = "failed"
+    cancelled = "cancelled"
+
+
+# Statuses that allow a cancel request to take effect. Once a job is complete
+# or failed, cancel is a no-op.
+CANCELLABLE_STATUSES = {JobStatus.queued, JobStatus.running}
 
 
 class JobRecord(BaseModel):
@@ -87,6 +93,17 @@ class JobStore(abc.ABC):
 
     @abc.abstractmethod
     async def mark_failed(self, job_id: str, error_message: str) -> None: ...
+
+    @abc.abstractmethod
+    async def mark_cancelled(self, job_id: str) -> None: ...
+
+    @abc.abstractmethod
+    async def request_cancel(self, job_id: str) -> bool:
+        """Mark the job as cancelled if it is currently queued or running.
+
+        Returns True if the request was accepted, False if the job is already
+        complete/failed (no-op) or unknown.
+        """
 
     @abc.abstractmethod
     async def list_recent(self, limit: int = 20) -> List[JobRecord]: ...
@@ -183,6 +200,27 @@ class InMemoryJobStore(JobStore):
             r.current_phase = "failed"
             r.error_message = error_message
             r.updated_at = datetime.utcnow()
+
+    async def mark_cancelled(self, job_id: str) -> None:
+        async with self._lock:
+            r = self._records.get(job_id)
+            if not r:
+                return
+            r.status = JobStatus.cancelled
+            r.current_phase = "cancelled"
+            r.updated_at = datetime.utcnow()
+
+    async def request_cancel(self, job_id: str) -> bool:
+        async with self._lock:
+            r = self._records.get(job_id)
+            if r is None:
+                return False
+            if r.status not in CANCELLABLE_STATUSES:
+                return False
+            r.status = JobStatus.cancelled
+            # current_phase preserved so the UI can show "cancelled during X".
+            r.updated_at = datetime.utcnow()
+            return True
 
     async def list_recent(self, limit: int = 20) -> List[JobRecord]:
         async with self._lock:
@@ -355,6 +393,42 @@ class PostgresJobStore(JobStore):
             row.error_message = error_message
             row.updated_at = datetime.utcnow()
             db.commit()
+        finally:
+            db.close()
+
+    async def mark_cancelled(self, job_id: str) -> None:
+        from .db import ExerciseJob
+        await asyncio.to_thread(self._mark_cancelled_sync, job_id, ExerciseJob)
+
+    def _mark_cancelled_sync(self, job_id, ExerciseJob) -> None:
+        db = self._SessionLocal()
+        try:
+            row = db.query(ExerciseJob).filter(ExerciseJob.id == job_id).first()
+            if not row:
+                return
+            row.status = JobStatus.cancelled.value
+            row.current_phase = "cancelled"
+            row.updated_at = datetime.utcnow()
+            db.commit()
+        finally:
+            db.close()
+
+    async def request_cancel(self, job_id: str) -> bool:
+        from .db import ExerciseJob
+        return await asyncio.to_thread(self._request_cancel_sync, job_id, ExerciseJob)
+
+    def _request_cancel_sync(self, job_id, ExerciseJob) -> bool:
+        db = self._SessionLocal()
+        try:
+            row = db.query(ExerciseJob).filter(ExerciseJob.id == job_id).first()
+            if row is None:
+                return False
+            if row.status not in {JobStatus.queued.value, JobStatus.running.value}:
+                return False
+            row.status = JobStatus.cancelled.value
+            row.updated_at = datetime.utcnow()
+            db.commit()
+            return True
         finally:
             db.close()
 
