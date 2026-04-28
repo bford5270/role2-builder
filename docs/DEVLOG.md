@@ -18,6 +18,41 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Polish pass: README, OpenAPI tags, ExerciseArtifacts dataclass, matrices skeleton
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Status going in:** Production-readiness pass committed (413859e), 126 tests green. README still the stock create-next-app template; OpenAPI `/docs` ungrouped; pipeline functions passed an opaque `Dict[str, Any]` between each other; matrices page showed bare "Loading…" text on cold load.
+
+**Done this session:**
+
+*Documentation:*
+- Replaced `README.md` (was 36 lines of create-next-app boilerplate) with a real project README: ASCII architecture diagram, quick-start commands, env-var table linking to `.env.example`, project layout overview, operating notes (job concurrency, cancellation, matrix overrides, logging), and an explicit "Known gaps" section pointing at the FOR_REVIEW doc / Bedrock deferral / DB test gap / no-auth.
+
+*OpenAPI tags:*
+- Defined a 5-tag taxonomy (`system`, `generation`, `jobs`, `exercises`, `settings`) on the FastAPI app with descriptions.
+- Tagged every endpoint (18 total) with the right tag + a one-line `summary`. Several got `response_description` too (the ones that return ZIP archives).
+- Bumped `app.version` to `0.6.0` to reflect the matrices/jobs surface.
+- Verified via `app.openapi()` — `/docs` is now grouped and navigable.
+
+*Typed pipeline artifacts:*
+- New `@dataclass ExerciseArtifacts` in `main.py` with explicit fields (cancelled, cases, schedule, warno, annex, medroe, generation_summary, matrix_snapshot, partial_cases). Includes a `to_dict()` for backwards compat in case anything serializes the raw shape.
+- `_run_exercise_pipeline` returns `ExerciseArtifacts` instead of `Dict[str, Any]`.
+- `_save_exercise_to_db`, `_build_zip`, the legacy `/generate-exercise` endpoint, and the job worker all use attribute access (`artifacts.cases`, `artifacts.cancelled`, `artifacts.matrix_snapshot`) instead of `.get()` / `[]` on a dict.
+- Cancel paths still carry `matrix_snapshot` so debugging a cancelled job tells you what matrix it would have used.
+- `test_pipeline_snapshot.py` updated to use attribute access; all 126 tests still pass.
+
+*Frontend:*
+- New `MatricesSkeleton` component on `/settings/matrices` — shimmer blocks for header, presets card, five matrix sections, and save button. Replaces the bare "Loading…" string.
+- Error state now shows a styled red card with a Retry button (was just the error string in plain text).
+
+**Verification:**
+- 126 pytest tests pass under `-W error::DeprecationWarning` (clean — no deprecations).
+- `tsc --noEmit` clean for the frontend.
+
+**Open questions / blockers:** unchanged from previous entry — `FOR_REVIEW_matrices_and_mets.md` pending SME / user sign-off; DB-backed exercise endpoint coverage still requires `db.py` late-init refactor; Bedrock + Phase 7 still parked.
+
+---
+
 ## 2026-04-29 (continued) — Production-readiness pass: structured logging, /health, .env.example, +15 tests
 
 **Branch:** `claude/review-schedule-issues-pjHcI`

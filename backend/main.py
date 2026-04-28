@@ -3,6 +3,7 @@ import random
 import json
 import asyncio
 import zipfile
+from dataclasses import dataclass, field
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -35,7 +36,25 @@ from backend.presets import apply_preset, list_presets
 configure_logging()
 log = get_logger(__name__)
 
-app = FastAPI(title="Role 2 Exercise Builder API")
+# OpenAPI tag taxonomy — keeps /docs grouped sensibly.
+_TAG_GROUPS = [
+    {"name": "system", "description": "Liveness probe + service metadata."},
+    {"name": "generation", "description": "Synchronous exercise generation (legacy, single request) plus the helper for naming exercises."},
+    {"name": "jobs", "description": "Async exercise generation: queue, poll status, cancel, download."},
+    {"name": "exercises", "description": "Persisted exercise history (requires DATABASE_URL)."},
+    {"name": "settings", "description": "Matrix configuration: overrides, presets, reset to defaults."},
+]
+
+app = FastAPI(
+    title="Role 2 Exercise Builder API",
+    description=(
+        "Generates Role 2 (Forward Surgical) training exercises — case books, MSEL "
+        "schedules, WARNO / Annex Q / MEDROE — from a few-day operations plan. "
+        "See `docs/STRATEGY.md` and `docs/DEVLOG.md` in the repo for design context."
+    ),
+    version="0.6.0",
+    openapi_tags=_TAG_GROUPS,
+)
 
 init_db()
 
@@ -328,11 +347,11 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     return output
 
 # API Endpoints
-@app.get("/")
+@app.get("/", tags=["system"], summary="Service banner")
 async def root():
     return {"status": "Role 2 Exercise Builder API", "version": "2.0"}
 
-@app.get("/health")
+@app.get("/health", tags=["system"], summary="Liveness + DB connectivity probe")
 async def health():
     """Liveness + DB connectivity probe.
 
@@ -359,7 +378,7 @@ async def health():
             )
     return {"status": "healthy", "db": db_state}
 
-@app.post("/generate-name")
+@app.post("/generate-name", tags=["generation"], summary="Suggest a USMC-style operation name")
 async def generate_name_endpoint(data: dict):
     env = data.get("environment", "General")
     region = data.get("region", "")
@@ -389,31 +408,76 @@ def _log_progress(completed: int, total: int) -> None:
     log.info("case-gen progress %d/%d", completed, total)
 
 
+@dataclass
+class ExerciseArtifacts:
+    """Outputs of `_run_exercise_pipeline` — handed to the ZIP builder, the DB
+    persistence helper, and the job worker. Two terminal states:
+
+    - cancelled=True: pipeline returned early; everything else is empty.
+    - cancelled=False: all fields populated, ready to ZIP and persist.
+
+    The matrix snapshot rides along regardless so /history can show what was
+    active at generate time.
+    """
+    cancelled: bool = False
+    cases: List[Dict[str, Any]] = field(default_factory=list)
+    schedule: List[Dict[str, Any]] = field(default_factory=list)
+    warno: str = ""
+    annex: str = ""
+    medroe: str = ""
+    generation_summary: Dict[str, Any] = field(default_factory=dict)
+    matrix_snapshot: Optional[Dict[str, Any]] = None
+    partial_cases: int = 0  # set when cancelled mid-pipeline; informational
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Backwards-compat: emit the same dict shape callers used previously.
+        Lets tests and any external integrations keep working untouched."""
+        d: Dict[str, Any] = {
+            "cancelled": self.cancelled,
+            "matrix_snapshot": self.matrix_snapshot,
+        }
+        if not self.cancelled:
+            d.update({
+                "cases": self.cases,
+                "schedule": self.schedule,
+                "warno": self.warno,
+                "annex": self.annex,
+                "medroe": self.medroe,
+                "generation_summary": self.generation_summary,
+            })
+        if self.cancelled and self.partial_cases:
+            d["partial_cases"] = self.partial_cases
+        return d
+
+
 async def _run_exercise_pipeline(
     config: ExerciseConfig,
     *,
     on_case_progress=None,
     on_phase=None,
     is_cancelled=None,
-) -> Dict[str, Any]:
+) -> ExerciseArtifacts:
     """Plan -> generate cases -> schedule -> docs. No HTTP, no DB, no ZIP.
 
-    Returns artifacts the caller can either ZIP up (legacy /generate-exercise)
-    or persist + serve via /jobs. If `is_cancelled()` returns True between
-    phases, the pipeline returns early with `cancelled=True` and whatever
-    work has completed so far.
+    Returns an ExerciseArtifacts ready for the caller to ZIP up (legacy
+    /generate-exercise) or persist + serve via /jobs. If `is_cancelled()`
+    returns True between phases, returns an artifacts instance with
+    `cancelled=True` and whatever work has completed so far.
     """
     async def _cancelled() -> bool:
         return bool(is_cancelled is not None and await is_cancelled())
 
     if on_phase:
         await on_phase("planning")
-    if await _cancelled():
-        return {"cancelled": True}
 
     # Load the active matrix view once (defaults + any global overrides) and
-    # snapshot it onto the artifacts for /history.
+    # snapshot it onto the artifacts for /history. Even cancelled pipelines
+    # carry the snapshot for debugging.
     matrix_view = await get_active_view()
+    snapshot = matrix_view.model_dump()
+
+    if await _cancelled():
+        return ExerciseArtifacts(cancelled=True, matrix_snapshot=snapshot)
 
     plans = []
     for day in config.days:
@@ -452,7 +516,11 @@ async def _run_exercise_pipeline(
         is_cancelled=is_cancelled,
     )
     if result.cancelled or await _cancelled():
-        return {"cancelled": True, "partial_cases": result.total_returned}
+        return ExerciseArtifacts(
+            cancelled=True,
+            matrix_snapshot=snapshot,
+            partial_cases=result.total_returned,
+        )
 
     cases_by_day = result.cases_by_day
     flat_cases: List[Dict] = []
@@ -465,7 +533,11 @@ async def _run_exercise_pipeline(
     if on_phase:
         await on_phase("generating_docs")
     if await _cancelled():
-        return {"cancelled": True, "partial_cases": result.total_returned}
+        return ExerciseArtifacts(
+            cancelled=True,
+            matrix_snapshot=snapshot,
+            partial_cases=result.total_returned,
+        )
     warno = await generate_warno(config)
     annex = await generate_annex_q(config)
     medroe = await generate_medroe(config)
@@ -487,21 +559,22 @@ async def _run_exercise_pipeline(
         ],
     }
 
-    return {
-        "cases": flat_cases,
-        "schedule": schedule,
-        "warno": warno,
-        "annex": annex,
-        "medroe": medroe,
-        "generation_summary": generation_summary,
-        "matrix_snapshot": matrix_view.model_dump(),
-        "cancelled": False,
-    }
+    return ExerciseArtifacts(
+        cancelled=False,
+        cases=flat_cases,
+        schedule=schedule,
+        warno=warno,
+        annex=annex,
+        medroe=medroe,
+        generation_summary=generation_summary,
+        matrix_snapshot=snapshot,
+    )
 
 
-def _save_exercise_to_db(config: ExerciseConfig, artifacts: Dict[str, Any]) -> Optional[int]:
+def _save_exercise_to_db(config: ExerciseConfig, artifacts: ExerciseArtifacts) -> Optional[int]:
     """Persist artifacts to the exercises table. Returns the new id, or None
-    if no DB is configured."""
+    if no DB is configured. Caller must check `artifacts.cancelled` first —
+    cancelled artifacts have nothing to persist."""
     if not SessionLocal:
         return None
     db = SessionLocal()
@@ -509,12 +582,12 @@ def _save_exercise_to_db(config: ExerciseConfig, artifacts: Dict[str, Any]) -> O
         ex = Exercise(
             name=config.exercise_name,
             config=config.model_dump(),
-            cases=artifacts["cases"],
-            msel_data=artifacts["schedule"],
-            warno_text=artifacts["warno"],
-            annex_q_text=artifacts["annex"],
-            medroe_text=artifacts["medroe"],
-            matrix_snapshot=artifacts.get("matrix_snapshot"),
+            cases=artifacts.cases,
+            msel_data=artifacts.schedule,
+            warno_text=artifacts.warno,
+            annex_q_text=artifacts.annex,
+            medroe_text=artifacts.medroe,
+            matrix_snapshot=artifacts.matrix_snapshot,
         )
         db.add(ex)
         db.commit()
@@ -524,17 +597,17 @@ def _save_exercise_to_db(config: ExerciseConfig, artifacts: Dict[str, Any]) -> O
         db.close()
 
 
-def _build_zip(config: ExerciseConfig, artifacts: Dict[str, Any]) -> BytesIO:
+def _build_zip(config: ExerciseConfig, artifacts: ExerciseArtifacts) -> BytesIO:
     zip_buf = BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(artifacts["schedule"], config).getvalue())
-        zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), artifacts["warno"]).getvalue())
-        zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", artifacts["annex"]).getvalue())
-        zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), artifacts["medroe"]).getvalue())
-        zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(artifacts["cases"], config).getvalue())
+        zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(artifacts.schedule, config).getvalue())
+        zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), artifacts.warno).getvalue())
+        zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", artifacts.annex).getvalue())
+        zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), artifacts.medroe).getvalue())
+        zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(artifacts.cases, config).getvalue())
         zf.writestr(
             f"{config.exercise_name}_generation_summary.json",
-            json.dumps(artifacts["generation_summary"], indent=2),
+            json.dumps(artifacts.generation_summary, indent=2),
         )
     zip_buf.seek(0)
     return zip_buf
@@ -550,7 +623,12 @@ def _summary_headers(generation_summary: Dict[str, Any], filename: str) -> Dict[
     }
 
 
-@app.post("/generate-exercise")
+@app.post(
+    "/generate-exercise",
+    tags=["generation"],
+    summary="Generate the full exercise package synchronously (legacy)",
+    response_description="ZIP archive (case book .docx, MSEL .xlsx, WARNO/Annex Q/MEDROE .docx, generation_summary.json)",
+)
 async def generate_exercise(config: ExerciseConfig):
     """Legacy synchronous endpoint. Builds the entire package in one request.
     For long exercises prefer POST /jobs/generate-exercise (Phase 4)."""
@@ -559,14 +637,14 @@ async def generate_exercise(config: ExerciseConfig):
         # Sync path can't be cancelled (no separate cancel endpoint binds to
         # it), but stay defensive in case callers pass an is_cancelled hook
         # via some future plumbing.
-        if artifacts.get("cancelled"):
+        if artifacts.cancelled:
             raise HTTPException(status_code=499, detail="exercise generation cancelled")
         _save_exercise_to_db(config, artifacts)
         zip_buf = _build_zip(config, artifacts)
         return Response(
             zip_buf.getvalue(),
             headers=_summary_headers(
-                artifacts["generation_summary"],
+                artifacts.generation_summary,
                 f"{config.exercise_name}_Package.zip",
             ),
             media_type="application/zip",
@@ -639,7 +717,7 @@ async def _run_exercise_job_worker(job_id: str) -> None:
                 on_phase=on_phase,
                 is_cancelled=is_cancelled,
             )
-            if artifacts.get("cancelled"):
+            if artifacts.cancelled:
                 # Worker honored the cancel request; status was already set to
                 # cancelled by the request_cancel call. Just leave it there.
                 jlog.info("cancelled mid-pipeline; partial work discarded")
@@ -648,7 +726,7 @@ async def _run_exercise_job_worker(job_id: str) -> None:
             await on_phase("packaging")
             exercise_id = await asyncio.to_thread(_save_exercise_to_db, config, artifacts)
 
-            summary = artifacts["generation_summary"]
+            summary = artifacts.generation_summary
             if summary.get("errors"):
                 await store.append_errors(job_id, summary["errors"])
             await store.mark_complete(
@@ -667,7 +745,12 @@ async def _run_exercise_job_worker(job_id: str) -> None:
             await store.mark_failed(job_id, str(e)[:1000])
 
 
-@app.post("/jobs/generate-exercise")
+@app.post(
+    "/jobs/generate-exercise",
+    tags=["jobs"],
+    summary="Queue an async exercise generation",
+    response_description="Job handle: poll GET /jobs/{id} for progress, GET /jobs/{id}/download once complete.",
+)
 async def queue_exercise_job(config: ExerciseConfig, background_tasks: BackgroundTasks):
     """Queue an async exercise generation. Returns immediately with the job id.
     Poll GET /jobs/{id} for progress; download with GET /jobs/{id}/download
@@ -685,7 +768,7 @@ async def queue_exercise_job(config: ExerciseConfig, background_tasks: Backgroun
     }
 
 
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", tags=["jobs"], summary="Job status + progress")
 async def get_job(job_id: str):
     record = await get_job_store().get(job_id)
     if record is None:
@@ -706,7 +789,7 @@ async def get_job(job_id: str):
     }
 
 
-@app.get("/jobs")
+@app.get("/jobs", tags=["jobs"], summary="Recent jobs (newest first)")
 async def list_jobs(limit: int = 20):
     records = await get_job_store().list_recent(limit=limit)
     return {
@@ -731,7 +814,7 @@ async def list_jobs(limit: int = 20):
 # Matrix configuration (Phase 6)
 # ---------------------------------------------------------------------------
 
-@app.get("/settings/matrices")
+@app.get("/settings/matrices", tags=["settings"], summary="Active matrix view, overrides, and factory defaults")
 async def get_matrix_settings():
     """Return the current overrides plus the merged view the planner uses.
 
@@ -747,7 +830,7 @@ async def get_matrix_settings():
     }
 
 
-@app.put("/settings/matrices")
+@app.put("/settings/matrices", tags=["settings"], summary="Replace overrides (Pydantic-validated)")
 async def put_matrix_settings(payload: MatrixOverrides):
     """Validate (via Pydantic) and persist a new override blob. PUT replaces
     all overrides; pass an empty body to clear them (or call DELETE)."""
@@ -759,19 +842,19 @@ async def put_matrix_settings(payload: MatrixOverrides):
     }
 
 
-@app.delete("/settings/matrices")
+@app.delete("/settings/matrices", tags=["settings"], summary="Reset to factory defaults")
 async def delete_matrix_settings():
     """Reset overrides — the planner falls back to defaults shipped in matrices.py."""
     await get_matrix_store().clear_overrides()
     return {"reset": True, "view": MatrixView.defaults().model_dump()}
 
 
-@app.get("/settings/matrices/presets")
+@app.get("/settings/matrices/presets", tags=["settings"], summary="List shipped preset bundles")
 async def get_matrix_presets():
     return {"presets": list_presets()}
 
 
-@app.post("/settings/matrices/presets/{name}/apply")
+@app.post("/settings/matrices/presets/{name}/apply", tags=["settings"], summary="Apply a named preset")
 async def apply_matrix_preset(name: str):
     try:
         overrides = await apply_preset(name)
@@ -786,7 +869,7 @@ async def apply_matrix_preset(name: str):
     }
 
 
-@app.post("/jobs/{job_id}/cancel")
+@app.post("/jobs/{job_id}/cancel", tags=["jobs"], summary="Request graceful cancellation")
 async def cancel_job(job_id: str):
     """Request graceful cancellation. The worker checks status between batches
     so the in-flight LLM call (if any) finishes before the worker exits.
@@ -811,7 +894,12 @@ async def cancel_job(job_id: str):
     }
 
 
-@app.get("/jobs/{job_id}/download")
+@app.get(
+    "/jobs/{job_id}/download",
+    tags=["jobs"],
+    summary="Download the ZIP for a completed job",
+    response_description="ZIP archive (same shape as POST /generate-exercise).",
+)
 async def download_job_zip(job_id: str):
     """Serve the ZIP for a completed job. Returns 409 if the job hasn't
     finished yet, 404 if the job/exercise doesn't exist."""
@@ -824,7 +912,7 @@ async def download_job_zip(job_id: str):
         raise HTTPException(status_code=404, detail="no exercise persisted for this job")
     return await download_exercise(record.exercise_id)
 
-@app.get("/exercises")
+@app.get("/exercises", tags=["exercises"], summary="List exercises (newest first)")
 async def list_exercises():
     if not SessionLocal:
         return {"exercises": []}
@@ -866,7 +954,7 @@ async def list_exercises():
     finally:
         db.close()
 
-@app.get("/exercises/{exercise_id}")
+@app.get("/exercises/{exercise_id}", tags=["exercises"], summary="Single exercise (full payload)")
 async def get_exercise(exercise_id: int):
     if not SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")
@@ -879,7 +967,11 @@ async def get_exercise(exercise_id: int):
     finally:
         db.close()
 
-@app.get("/exercises/{exercise_id}/download")
+@app.get(
+    "/exercises/{exercise_id}/download",
+    tags=["exercises"],
+    summary="Rebuild and download the full ZIP for a stored exercise",
+)
 async def download_exercise(exercise_id: int):
     if not SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")
@@ -915,7 +1007,11 @@ async def download_exercise(exercise_id: int):
     finally:
         db.close()
 
-@app.get("/exercises/{exercise_id}/document/{doc_type}")
+@app.get(
+    "/exercises/{exercise_id}/document/{doc_type}",
+    tags=["exercises"],
+    summary="Rebuild a single document (msel | warno | annex_q | medroe | case_book)",
+)
 async def download_document(exercise_id: int, doc_type: str):
     if not SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")

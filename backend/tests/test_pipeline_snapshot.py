@@ -67,8 +67,9 @@ class TestPipelineSnapshot:
 
         artifacts = asyncio.run(_run_exercise_pipeline(_config()))
 
-        assert "matrix_snapshot" in artifacts
-        snap = artifacts["matrix_snapshot"]
+        assert artifacts.cancelled is False
+        snap = artifacts.matrix_snapshot
+        assert snap is not None
         # Snapshot covers every editable matrix.
         for key in (
             "trauma_ratio_by_setting", "threat_level_shift",
@@ -90,8 +91,8 @@ class TestPipelineSnapshot:
         )
 
         artifacts = asyncio.run(_run_exercise_pipeline(_config()))
-        snap = artifacts["matrix_snapshot"]
-        assert snap["trauma_ratio_by_setting"]["Defensive Operations"] == 0.99
+        assert artifacts.cancelled is False
+        assert artifacts.matrix_snapshot["trauma_ratio_by_setting"]["Defensive Operations"] == 0.99
 
     def test_save_helper_passes_snapshot_to_orm(self, monkeypatch):
         """When DB is configured, `_save_exercise_to_db` writes

@@ -197,11 +197,23 @@ export default function MatricesSettingsPage() {
   };
 
   if (loading || !draft || !data) {
-    return (
-      <div className="min-h-screen bg-stone-900 text-amber-100 p-8 flex items-center justify-center">
-        <p>{error ? error : 'Loading…'}</p>
-      </div>
-    );
+    if (error) {
+      return (
+        <div className="min-h-screen bg-stone-900 text-amber-100 p-8 flex items-center justify-center">
+          <div className="bg-red-900/50 border border-red-700 rounded-lg p-4 max-w-lg text-red-300 text-sm">
+            <strong>Failed to load matrix configuration.</strong>
+            <div className="mt-1 font-mono text-xs">{error}</div>
+            <button
+              onClick={loadAll}
+              className="mt-3 text-xs px-3 py-1 rounded border border-red-400 hover:bg-red-900/40"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return <MatricesSkeleton />;
   }
 
   return (
@@ -581,5 +593,54 @@ function NumberCell({
       }}
       className={`w-20 bg-stone-700 border ${changed ? 'border-amber-500' : 'border-stone-600'} rounded px-2 py-1 text-sm text-right`}
     />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Loading skeleton — keeps page layout stable while /settings/matrices fetches.
+// ---------------------------------------------------------------------------
+
+function MatricesSkeleton() {
+  const blockClass = "bg-stone-800 border border-stone-700 rounded-lg p-4 mb-6 animate-pulse";
+  const lineClass = "h-3 bg-stone-700 rounded";
+  return (
+    <div className="min-h-screen bg-stone-900 text-amber-100 p-6">
+      <div className="max-w-5xl mx-auto">
+        <div className="mb-6 flex items-center justify-between">
+          <div className={`${lineClass} w-64`} />
+          <div className={`${lineClass} w-24`} />
+        </div>
+        <div className={`${lineClass} w-full max-w-2xl mb-6`} />
+
+        {/* Presets card */}
+        <div className={blockClass}>
+          <div className={`${lineClass} w-32 mb-3`} />
+          <div className="flex gap-3">
+            <div className="h-9 w-48 bg-stone-700 rounded" />
+            <div className="h-9 w-32 bg-stone-700 rounded" />
+          </div>
+        </div>
+
+        {/* Five matrix sections */}
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} className={blockClass}>
+            <div className={`${lineClass} w-48 mb-2`} />
+            <div className={`${lineClass} w-3/4 mb-4`} />
+            <div className="grid grid-cols-2 gap-3">
+              {[0, 1, 2, 3].map((j) => (
+                <div key={j} className="flex items-center justify-between">
+                  <div className={`${lineClass} w-32`} />
+                  <div className="h-7 w-20 bg-stone-700 rounded" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        <div className="flex justify-center mt-6 mb-12">
+          <div className="h-12 w-48 bg-stone-700 rounded animate-pulse" />
+        </div>
+      </div>
+    </div>
   );
 }
