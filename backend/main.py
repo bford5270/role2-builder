@@ -480,7 +480,7 @@ def _save_exercise_to_db(config: ExerciseConfig, artifacts: Dict[str, Any]) -> O
     try:
         ex = Exercise(
             name=config.exercise_name,
-            config=config.dict(),
+            config=config.model_dump(),
             cases=artifacts["cases"],
             msel_data=artifacts["schedule"],
             warno_text=artifacts["warno"],
@@ -633,7 +633,7 @@ async def queue_exercise_job(config: ExerciseConfig, background_tasks: Backgroun
     once status == 'complete'."""
     total_cases = sum(d.total_patients for d in config.days)
     store = get_job_store()
-    record = await store.create(total_cases=total_cases, config=config.dict())
+    record = await store.create(total_cases=total_cases, config=config.model_dump())
     background_tasks.add_task(_run_exercise_job_worker, record.id)
     return {
         "job_id": record.id,
