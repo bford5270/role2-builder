@@ -18,6 +18,8 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from backend.providers.base import inject_stable_ids
+
 app = FastAPI(title="Role 2 Exercise Builder API")
 
 # Database setup
@@ -170,16 +172,18 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
     )
     
     try:
-        return json.loads(response.text)
+        parsed = json.loads(response.text)
     except json.JSONDecodeError:
         text = response.text
         start, end = text.find('{'), text.rfind('}') + 1
         if start != -1 and end > start:
-            return json.loads(text[start:end])
-        raise
+            parsed = json.loads(text[start:end])
+        else:
+            raise
+    return inject_stable_ids(parsed)
 
 def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True) -> Dict:
-    return {
+    return inject_stable_ids({
         "meta": {"title": case_type, "estimated_duration": "30-45 min" if is_trauma else "20-30 min", "personnel": "Medical Team", "target_specialty": "Emergency Medicine" if is_trauma else "Family Physician"},
         "learning_objectives": ["Perform primary survey", "Initiate resuscitation", "Determine evacuation priority"],
         "zmist": {"zap": str(random.randint(10000, 99999)), "mechanism": mechanism, "injuries": case_type, "signs": "HR 110, BP 100/70" if is_trauma else "HR 88, BP 120/80", "treatment": "IV, O2, monitoring"},
@@ -190,7 +194,7 @@ def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True)
         "labs": {"hgb": "11.2", "ph": "7.32", "lactate": "3.1", "base_excess": "-4", "inr": "1.1"},
         "evacuation": {"transport_type": "MEDEVAC", "priority": "Priority" if is_trauma else "Routine", "considerations": "Monitor vitals", "handover_notes": f"Stable s/p {case_type}"},
         "debrief_questions": ["What were key findings?", "Was resuscitation adequate?", "What would you change?"]
-    }
+    })
 
 # Document generation
 def generate_warno(config: ExerciseConfig) -> str:

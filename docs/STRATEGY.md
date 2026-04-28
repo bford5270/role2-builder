@@ -28,6 +28,36 @@ exercise inputs. The current pipeline has three classes of problems:
   patients routinely time out and fall back to template cases that quietly
   degrade quality.
 
+## 1.5. North Star (added 2026-04-29)
+
+The longer-term home for this product is **AWS GovCloud**, co-hosted with the
+**R2 Assessment Vehicle**, running on a **tablet** that drives simulation, case
+content, assessment, and scheduling from a single environment. Today's refactor
+must not paint us into a corner that rewrites later. Concrete implications:
+
+- **Model provider must be swappable.** GovCloud cannot call Google Gemini.
+  Case generation lives behind a `CaseProvider` interface from day 1;
+  Gemini is one implementation, Bedrock-Claude (FedRAMP High / IL5) will be
+  another. Same prompts, different client.
+- **Builder now, runner later, shared schema.** The current product *builds* an
+  exercise package. A future "runner" mode will load that package on a tablet
+  and drive it live (vitals on a clock, contingency triggers, instructor
+  controls). Schema is designed for both from day 1; runner is out of scope for
+  this refactor but not foreclosed.
+- **Stable IDs everywhere in the case schema.** `case_id`, per-action IDs,
+  per-contingency IDs, and per-vitals-trend-point IDs are added now (UUIDs) so
+  the assessment vehicle and the future runner can reference them without a
+  migration later.
+- **Builder online, runner offline-capable.** The builder needs the model and
+  stays online. The runner (later) loads a pre-generated exercise to local
+  storage and works fully offline; results sync when reconnected. Today's
+  refactor produces packages that are self-contained enough to support this
+  (no live URLs in the case body, all media inlined).
+- **GovCloud constraints to remember.** No public model APIs; FedRAMP High /
+  IL5 alignment for Bedrock; no third-party telemetry; data residency in
+  GovCloud regions only. Wherever we add an environment variable or a service
+  call today, it should be one we can configure away from public infra later.
+
 ---
 
 ## 2. Problem Inventory
@@ -182,13 +212,18 @@ Each phase is independently shippable. Tests added per phase.
 - [ ] Add `pytest` config and a smoke test for `generate_exercise` end-to-end with mocked Gemini.
 - [ ] Inventory current test coverage (likely none).
 
-### Phase 1 — Casualty Planner (no LLM changes)
-Goal: every input demonstrably influences the per-day plan, before we touch generation.
+### Phase 1 — Casualty Planner + Provider Abstraction + Stable IDs (no LLM behavior change)
+Goal: every input demonstrably influences the per-day plan; case generation is
+behind a swappable provider; case schema carries stable IDs for the assessment
+vehicle.
 - [ ] Default matrices in `matrices.py` (trauma ratio, triage distribution, etiology preferences).
 - [ ] `casualty_planner.build_day_plan(day, config)` returning `DayPlan`.
 - [ ] Adds CBRN and detainee buckets when flags set.
 - [ ] Footprint constraint: `surgical_allowed` flag respected by phase logic.
 - [ ] Replace keyword-based `determine_case_phases` with phase derivation from `etiology` + `triage`.
+- [ ] `providers/base.py` defines `CaseProvider` ABC; `providers/gemini.py` wraps the existing client.
+- [ ] `providers/__init__.py` selects implementation by `CASE_PROVIDER` env var (`gemini` default; `bedrock` stub).
+- [ ] Add stable IDs (UUIDv4) to case, expected_action, contingency, vitals_trend_point.
 - [ ] Unit tests covering each B-row from the inventory.
 
 ### Phase 2 — Schedule Builder Rewrite
@@ -205,10 +240,11 @@ Goal: fix every A-row.
 - [ ] Property-based tests (`hypothesis`) for time arithmetic.
 
 ### Phase 3 — Batched Case Generation
-- [ ] `case_generator.generate_batch(plan_buckets, batch_size=5)` — single Gemini prompt returns 5 structured cases at once.
+- [ ] `CaseProvider.generate_batch(plan_buckets, batch_size=5)` — single prompt returns 5 structured cases at once.
 - [ ] Per-case retry with exponential backoff; failed cases logged, only fall back to template after retries exhausted.
 - [ ] `generate_batch` is async; up to 3 batches in flight via `asyncio.Semaphore`.
 - [ ] Surface failures in job error log instead of silently masking (C4, C5).
+- [ ] Prompt and response shape identical across providers — only the transport differs.
 
 ### Phase 4 — Background Job Infrastructure
 - [ ] `ExerciseJob` SQLAlchemy model: `id, status, total_cases, completed_cases, current_phase, errors (JSON), exercise_id, created_at, updated_at`.
@@ -227,6 +263,14 @@ Goal: fix every A-row.
 - [ ] `/settings/matrices` page with editable trauma ratio and triage distribution tables.
 - [ ] Persist per-user (or globally) in a `settings` row.
 - [ ] Defaults remain in `matrices.py`; UI overrides them on a per-exercise basis.
+
+### Phase 7 (future, out of scope for this refactor) — Tablet Runner
+- Load a pre-generated `Exercise` package onto a tablet; works offline.
+- Drives vitals on a clock, fires contingency prompts, exposes instructor
+  controls (advance phase, inject curveball, mark intervention).
+- Streams assessment events to the R2 Assessment Vehicle keyed by the stable
+  IDs added in Phase 1.
+- Targets GovCloud deployment with Bedrock-Claude as the case provider.
 
 ---
 
