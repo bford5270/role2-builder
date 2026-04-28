@@ -19,6 +19,9 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from backend.providers.base import inject_stable_ids
+from backend.casualty_planner import EtiologyBucket, build_day_plan
+from backend.schedule_builder import build_schedule
+from backend.matrices import TRAUMA_BY_ETIOLOGY, GENERAL_TRAUMA
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
@@ -234,88 +237,24 @@ Include: Treatment priorities, evacuation priorities, holding policy, blood prod
     response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return response.text
 
-# Schedule generation
-def assign_evaluator(case: Dict, specialists: Dict[str, int], assigned_counts: Dict[str, int]) -> str:
-    needs_surgery = case.get("phases", {}).get("dcs") is not None
-    triage = case.get("triage_category", "T2")
-    
-    if needs_surgery:
-        priority = ["General Surgery", "Orthopaedic Surgery", "Anesthesiology", "Emergency Medicine"]
-    elif triage in ["T1", "T2"]:
-        priority = ["Emergency Medicine", "Family Physician", "ER Nurse", "ERC Nurse"]
-    else:
-        priority = ["ICU Nurse", "Med Surg Nurse", "ER Nurse", "Family Physician"]
-    
-    abbrev = {"General Surgery": "Gen Surg", "Orthopaedic Surgery": "Ortho", "Emergency Medicine": "EM", "Family Physician": "FP", "Anesthesiology": "Anes", "ERC Nurse": "ERC", "ER Nurse": "ER RN", "ICU Nurse": "ICU RN", "Med Surg Nurse": "MS RN"}
-    
-    for spec in priority:
-        if specialists.get(spec, 0) > 0:
-            assigned_counts[spec] = assigned_counts.get(spec, 0) + 1
-            num = ((assigned_counts[spec] - 1) % specialists[spec]) + 1
-            return f"{abbrev.get(spec, spec)} {num}"
-    return "Unassigned"
+# Schedule generation now lives in backend.schedule_builder; assign_evaluator and
+# generate_schedule were removed in favor of build_schedule(plans, cases_by_day, ...).
 
-def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
-    schedule = []
-    case_idx = 0
-    assigned_counts = {}
-    
-    for day in config.days:
-        start_hour, total_hours = (19, 12) if day.night_ops else (7, 12)
-        
-        if day.cbrn:
-            cbrn_time = 9 if not day.night_ops else 21
-            schedule.append({"day": day.day_number, "time": f"{cbrn_time:02d}00", "nine_line_time": "N/A", "route": "N/A", "triage_cat": "N/A", "mechanism": "CBRN DRILL", "brief_description": "1-hour CBRN exercise - All clinical ops paused", "evaluator": "All Hands", "case_num": "DRILL"})
-        
-        num_waves = day.total_waves
-        pts_per_wave = day.total_patients // num_waves
-        remainder = day.total_patients % num_waves
-        wave_interval = total_hours / (num_waves + 1)
-        
-        for wave in range(num_waves):
-            wave_hour = (start_hour + int(wave_interval * (wave + 1))) % 24 if day.night_ops else start_hour + int(wave_interval * (wave + 1))
-            wave_pts = pts_per_wave + (1 if wave < remainder else 0)
-            time_spread = 45 if day.mascal and wave == 0 else 60
-            if day.mascal and wave == 0 and day.mascal_patients:
-                wave_pts = day.mascal_patients
-            
-            for p in range(wave_pts):
-                if case_idx >= len(cases):
-                    break
-                case = cases[case_idx]
-                
-                min_offset = int((p / max(wave_pts, 1)) * time_spread)
-                arr_hour, arr_min = wave_hour, min_offset
-                if arr_min >= 60:
-                    arr_hour += 1
-                    arr_min -= 60
-                
-                route = random.choice(["MEDEVAC", "Ground", "Walk-in"]) if not day.mascal else random.choice(["MEDEVAC", "Ground", "Litter"])
-                if route == "Walk-in":
-                    nine_time = "N/A"
-                else:
-                    nine_hr, nine_min = arr_hour, arr_min - 30
-                    if nine_min < 0:
-                        nine_hr -= 1
-                        nine_min += 60
-                    if nine_hr < 0:
-                        nine_hr += 24
-                    nine_time = f"{nine_hr:02d}{nine_min:02d}"
-                
-                schedule.append({
-                    "day": day.day_number,
-                    "time": f"{arr_hour:02d}{arr_min:02d}",
-                    "nine_line_time": nine_time,
-                    "route": route,
-                    "triage_cat": case.get("triage_category", "T2"),
-                    "mechanism": case.get("zmist", {}).get("mechanism", "Unknown")[:50],
-                    "brief_description": case.get("zmist", {}).get("injuries", "")[:80],
-                    "evaluator": assign_evaluator(case, config.specialists, assigned_counts),
-                    "case_num": f"Case {case_idx + 1}"
-                })
-                case_idx += 1
-    
-    return schedule
+
+def _bucket_to_case_inputs(bucket: EtiologyBucket, environment: str) -> tuple[str, str]:
+    """Resolve a planner bucket into (case_type, mechanism) for the LLM."""
+    cat = bucket.category
+    if cat in ("trauma_surgical", "trauma_non_surgical"):
+        injuries = TRAUMA_BY_ETIOLOGY.get(bucket.etiology, GENERAL_TRAUMA)
+        case_type = random.choice(injuries) if injuries else bucket.etiology
+        return case_type, bucket.etiology
+    if cat == "dnbi":
+        return bucket.etiology, f"DNBI - {environment}"
+    if cat in ("cbrn", "cbrn_combined"):
+        return bucket.etiology, "CBRN exposure"
+    if cat in ("detainee_trauma", "detainee_medical"):
+        return bucket.etiology, "Detainee operations"
+    return bucket.etiology, bucket.etiology
 
 # Document creation
 def create_docx(title: str, subtitle: str, content: str) -> BytesIO:
@@ -520,37 +459,55 @@ async def generate_name_endpoint(data: dict):
 @app.post("/generate-exercise")
 async def generate_exercise(config: ExerciseConfig):
     try:
-        cases = []
-        
+        # ---- 1. Build per-day plans from inputs ----
+        plans = []
         for day in config.days:
-            trauma_ratio = 0.85 if day.mascal or day.tactical_setting in ["Frontal Attack", "Amphibious Assault"] else 0.50
-            num_trauma = int(day.total_patients * trauma_ratio)
-            num_dnbi = day.total_patients - num_trauma
-            
-            # Trauma
-            for _ in range(num_trauma):
-                inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal and day.mascal_etiology else GENERAL_TRAUMA
-                case_type = random.choice(inj_types)
-                mech = day.mascal_etiology if day.mascal else day.tactical_setting
-                try:
-                    cases.append(generate_case_sync(case_type, mech, config.environment, config.region))
-                except:
-                    cases.append(create_fallback_case(case_type, mech, True))
-            
-            # DNBI
-            env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
-            for _ in range(num_dnbi):
-                case_type = random.choice(env_dnbi)
-                try:
-                    cases.append(generate_case_sync(case_type, f"DNBI - {config.environment}", config.environment, config.region))
-                except:
-                    cases.append(create_fallback_case(case_type, f"DNBI - {config.environment}", False))
-        
-        random.shuffle(cases)
-        schedule = generate_schedule(config, cases)
+            plans.append(build_day_plan(
+                day_number=day.day_number,
+                tactical_setting=day.tactical_setting,
+                total_patients=day.total_patients,
+                night_ops=day.night_ops,
+                mascal=day.mascal,
+                mascal_etiology=day.mascal_etiology,
+                mascal_patients=day.mascal_patients,
+                cbrn=day.cbrn,
+                detainee_ops=day.detainee_ops,
+                threat_level=config.threat_level,
+                environment=config.environment,
+                region=config.region,
+                selected_footprint=config.selected_footprint,
+                selected_mets=config.selected_mets,
+                total_waves=day.total_waves,
+            ))
+
+        # ---- 2. Generate cases per bucket, keyed by day_number ----
+        cases_by_day: Dict[int, List[Dict]] = {}
+        flat_cases: List[Dict] = []
+        for plan in plans:
+            day_cases: List[Dict] = []
+            for bucket in plan.etiology_buckets:
+                for _ in range(bucket.count):
+                    case_type, mech = _bucket_to_case_inputs(bucket, config.environment)
+                    is_trauma = bucket.category in (
+                        "trauma_surgical", "trauma_non_surgical",
+                        "cbrn_combined", "detainee_trauma",
+                    )
+                    try:
+                        case = generate_case_sync(case_type, mech, config.environment, config.region)
+                    except Exception:
+                        case = create_fallback_case(case_type, mech, is_trauma)
+                    day_cases.append(case)
+            cases_by_day[plan.day_number] = day_cases
+            flat_cases.extend(day_cases)
+
+        # ---- 3. Build schedule (no global shuffle; cases stay on their day) ----
+        events = build_schedule(plans, cases_by_day, specialists=config.specialists)
+        schedule = [e.to_dict() for e in events]
+
         warno = generate_warno(config)
         annex = generate_annex_q(config)
         medroe = generate_medroe(config)
+        cases = flat_cases
         
         # Save
         if SessionLocal:

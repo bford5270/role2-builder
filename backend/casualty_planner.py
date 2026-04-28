@@ -46,6 +46,15 @@ class DayPlan(BaseModel):
     met_emphasis: List[str] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
 
+    # Operational flags forwarded so the schedule builder doesn't need DayConfig.
+    night_ops: bool = False
+    mascal: bool = False
+    mascal_patients: Optional[int] = None
+    mascal_etiology: Optional[str] = None
+    cbrn: bool = False
+    detainee_ops: bool = False
+    total_waves: int = 3
+
     @property
     def total_patients(self) -> int:
         return sum(b.count for b in self.etiology_buckets)
@@ -222,6 +231,7 @@ def build_day_plan(
     region: Optional[str],
     selected_footprint: List[str],
     selected_mets: List[str],
+    total_waves: int = 3,
     seed: Optional[int] = None,
 ) -> DayPlan:
     """Build a deterministic plan for one day.
@@ -363,4 +373,11 @@ def build_day_plan(
         surgical_allowed=surgical_ok,
         met_emphasis=sorted(set(mets)),
         notes=notes,
+        night_ops=night_ops,
+        mascal=mascal,
+        mascal_patients=mascal_patients,
+        mascal_etiology=mascal_etiology,
+        cbrn=cbrn,
+        detainee_ops=detainee_ops,
+        total_waves=total_waves,
     )

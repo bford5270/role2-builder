@@ -52,18 +52,14 @@ class TestStableIDs:
 class TestStubProvider:
     def test_round_trip(self):
         provider = StubCaseProvider()
-
-        async def run():
-            return await provider.generate_case(
-                case_type="Penetrating chest trauma",
-                mechanism="GSW/Small Arms",
-                environment="Desert",
-                region="CENTCOM",
-                phases=["DCR", "DCS", "PCC"],
-                target_triage="T1",
-            )
-
-        case = asyncio.get_event_loop().run_until_complete(run()) if not asyncio.get_event_loop().is_running() else asyncio.run(run())
+        case = asyncio.run(provider.generate_case(
+            case_type="Penetrating chest trauma",
+            mechanism="GSW/Small Arms",
+            environment="Desert",
+            region="CENTCOM",
+            phases=["DCR", "DCS", "PCC"],
+            target_triage="T1",
+        ))
         assert case["triage_category"] == "T1"
         assert case["phases"]["dcs"] is not None
         assert UUID_RE.match(case["case_id"])

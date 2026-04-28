@@ -18,6 +18,43 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Phase 2 complete: schedule rewrite
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Phase:** Phase 2 — Schedule Builder Rewrite
+**Status going in:** Phase 1 committed (8f3cf9b) with 43 tests green. `generate_schedule` and `assign_evaluator` in `main.py` still had bugs A1–A13 from STRATEGY.md §2.
+
+**Done this session:**
+- Extended `DayPlan` to forward operational flags (`night_ops`, `mascal`, `mascal_patients`, `mascal_etiology`, `cbrn`, `detainee_ops`, `total_waves`) so the schedule builder doesn't need a separate DayConfig channel.
+- New `backend/schedule_builder.py`:
+  - Minute-based time arithmetic with `(start_hour, total_minutes)` shift model; cross-midnight handled by absolute-minute conversion (`minutes_to_hhmm` returns a `crosses_midnight` flag) — fixes A3 / A11.
+  - `ScheduleEvent` dataclass with `to_dict()` matching the existing MSEL columns plus `case_id` back-reference for the assessment vehicle.
+  - Per-day case validation (A13).
+  - Wave assignment: MASCAL day puts mascal patients in wave 0 *additively*, remaining patients spread across other waves (A2).
+  - `_split_into_waves` handles the small-totals edge (A9); MASCAL spread scales with patient count (A10).
+  - `choose_route` keyed on triage + category + mascal-context (A6).
+  - `_EvalState` tracks busy windows per (specialty, slot); idle-first across the priority list, fall through on overload (A7, A8).
+  - CBRN drill window blocks clinical waves; arrivals that land in the drill window are pushed to drill_end + stagger; drill time configurable per-day (A4, A12).
+  - Final `events.sort(key=_sort_key)` on `(day, minutes_from_shift_start)` (A5).
+- `main.py` wired through: `generate_exercise` now builds `DayPlan`s from inputs, generates cases per bucket (still sequentially via Gemini for now — Phase 3 will batch), and calls `build_schedule(plans, cases_by_day, specialists)`. Removed old `generate_schedule` / `assign_evaluator` / `determine_case_phases`. Added `_bucket_to_case_inputs` to translate planner buckets into `(case_type, mechanism)` for the LLM.
+- `backend/tests/test_schedule_builder.py` — 16 tests covering each A-row plus hypothesis property tests for time arithmetic.
+- `backend/tests/test_pipeline_integration.py` — 2 end-to-end tests running the full planner → StubCaseProvider → build_schedule flow with a 2-day exercise (one quiet, one MASCAL+CBRN+night).
+- 61 tests passing total. No regressions in Phase 1 tests.
+
+**Bug found and fixed mid-session:** `_EvalState.assign` returned the busiest slot of the top-priority specialty instead of falling through to the next specialty when all top-priority slots were busy. Now does idle-first across the whole priority list (Pass 1), only falls back to least-busy across all priorities when the system is fully booked (Pass 2).
+
+**Next (Phase 3 — Batched Case Generation):**
+- Add `CaseProvider.generate_batch(buckets, batch_size=5)` returning N cases per Gemini call.
+- Async fan-out via `asyncio.Semaphore` (max 3 batches in flight).
+- Per-case retry with exponential backoff; failures surface in a structured error log instead of silently falling back.
+- Switch `main.generate_exercise` to use the provider + batch path. (This is the key step for the GovCloud transition: only the provider implementation has to change.)
+- Decide footprint-suppression policy (hard suppress vs evac-flag) before wiring the prompt for surgical cases.
+
+**Open questions / blockers:**
+- Same as before: SME review of matrices, canonical MET list, Bedrock model id pinning at GovCloud onboarding.
+- Phase 3 needs a concrete answer on whether `generate_exercise` should keep returning a sync ZIP (legacy) while we add a parallel `POST /jobs` path (Phase 4), or whether Phase 3 should immediately move to job-mode.
+
+---
+
 ## 2026-04-29 — Phase 1 kickoff: north star, planner, provider, stable IDs
 **Branch:** `claude/review-schedule-issues-pjHcI`
 **Phase:** Phase 1 — Casualty Planner + Provider Abstraction + Stable IDs
