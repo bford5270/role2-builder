@@ -3,7 +3,14 @@ SQLAlchemy models and DB lifecycle.
 
 Pulled out of main.py so jobs.py can import Exercise/ExerciseJob without a
 circular import. DATABASE_URL is still optional — when unset, `engine` and
-`SessionLocal` are None and the in-memory job store handles persistence.
+`SessionLocal` are None and the in-memory stores handle persistence.
+
+`init_db(database_url=None)` is idempotent and re-callable: tests use it to
+swap in a SQLite database, production calls it once at startup. Callers that
+need late binding (i.e. tests that swap the DB after `main` is imported)
+should call `db.SessionLocal()` against the *module*, not `from db import
+SessionLocal` — the symbol is module-level so attribute lookup picks up the
+current value.
 """
 
 from __future__ import annotations
@@ -12,8 +19,9 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 def _normalize_url(url: Optional[str]) -> Optional[str]:
@@ -22,16 +30,12 @@ def _normalize_url(url: Optional[str]) -> Optional[str]:
     return url
 
 
-DATABASE_URL = _normalize_url(os.getenv("DATABASE_URL"))
-
-# Engines are created lazily so unit tests can run without DATABASE_URL.
-if DATABASE_URL:
-    from sqlalchemy import create_engine
-    engine = create_engine(DATABASE_URL)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-else:
-    engine = None
-    SessionLocal = None
+# Module-level handles. Mutated by init_db(). Callers should access via
+# `backend.db.SessionLocal` (attribute lookup at call time) rather than
+# capturing the symbol at import.
+DATABASE_URL: Optional[str] = None
+engine = None
+SessionLocal = None
 
 Base = declarative_base()
 
@@ -82,6 +86,38 @@ class ExerciseJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-def init_db() -> None:
-    if engine is not None:
+def init_db(database_url: Optional[str] = None) -> None:
+    """Configure / reconfigure the DB. Safe to call multiple times.
+
+    - If `database_url` is provided, use it.
+    - Otherwise read `DATABASE_URL` from env.
+    - If neither yields a URL, leave `engine` and `SessionLocal` as None
+      (DB-less mode; in-memory stores take over).
+
+    Always (re-)creates the schema on the current engine. SQLite (used by
+    tests) needs `check_same_thread=False` so the FastAPI worker thread
+    can hand sessions to background tasks.
+    """
+    global DATABASE_URL, engine, SessionLocal
+    url = _normalize_url(database_url if database_url is not None else os.getenv("DATABASE_URL"))
+    DATABASE_URL = url
+    if url:
+        kwargs: dict = {"future": True}
+        if url.startswith("sqlite"):
+            kwargs["connect_args"] = {"check_same_thread": False}
+            # In-memory SQLite gives each connection its own DB. StaticPool
+            # keeps a single connection alive so sessions share the same one.
+            if ":memory:" in url:
+                kwargs["poolclass"] = StaticPool
+        engine = create_engine(url, **kwargs)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base.metadata.create_all(bind=engine)
+    else:
+        engine = None
+        SessionLocal = None
+
+
+# Configure on import so the production code path (uvicorn boot) keeps working
+# without an explicit init_db() call. Tests that need a different DB call
+# init_db("sqlite:///...") again — it's idempotent.
+init_db()

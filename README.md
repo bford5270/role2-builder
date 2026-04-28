@@ -88,7 +88,7 @@ All env vars live in [.env.example](./.env.example) with inline guidance. The hi
 ## Tests
 
 ```bash
-pytest                        # 126 tests, ~3s
+pytest                        # 142 tests, ~5s
 pytest -W error::DeprecationWarning   # CI mode — clean
 ```
 
@@ -101,7 +101,8 @@ Test files live under `backend/tests/`:
 - `test_matrix_store.py` — overrides, merge, settings endpoints
 - `test_jobs.py` — JobStore CRUD + end-to-end job lifecycle + cancellation
 - `test_pipeline_snapshot.py` — `matrix_snapshot` flows through pipeline
-- `test_legacy_endpoints.py` — `/generate-exercise`, `/health`, `/generate-name` integration
+- `test_legacy_endpoints.py` — `/generate-exercise`, `/health`, `/generate-name` integration (DB-less paths)
+- `test_db_endpoints.py` — `/exercises/*`, `/health` DB ping, job→exercise download, snapshot persistence (SQLite-backed fixture)
 - `test_pipeline_integration.py` — planner + generator + schedule together
 - `test_providers.py` — provider abstraction contract
 
@@ -155,7 +156,6 @@ docs/
 
 - `docs/FOR_REVIEW_matrices_and_mets.md` is awaiting SME / user sign-off on the default casualty matrices, the preset bundles, and the canonical MET list.
 - `BedrockCaseProvider` is a stub. Implementation deferred until GovCloud onboarding (untested provider code is worse than no provider code).
-- DB-backed `/exercises/{id}/download` integration tests deferred — `db.py` currently captures `SessionLocal` at import time, so tests can't easily inject SQLite.
 - No frontend tests (no Playwright / Vitest setup yet).
 - No auth. `/settings/matrices` is currently editable by anyone with network access — fine for the current deployment, lock down when auth lands.
 

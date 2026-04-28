@@ -22,7 +22,8 @@ from backend.casualty_planner import EtiologyBucket, build_day_plan
 from backend.schedule_builder import build_schedule
 from backend.matrices import TRAUMA_BY_ETIOLOGY, GENERAL_TRAUMA
 from backend.case_generator import generate_all_cases
-from backend.db import Exercise, SessionLocal, init_db
+from backend import db
+from backend.db import Exercise
 from backend.jobs import JobStatus, get_job_semaphore, get_job_store
 from backend.logging_config import configure_logging, get_job_logger, get_logger
 from backend.matrix_store import (
@@ -56,7 +57,8 @@ app = FastAPI(
     openapi_tags=_TAG_GROUPS,
 )
 
-init_db()
+# DB schema is created at db.py import time via the bottom-of-module init_db()
+# call; tests can re-call db.init_db("sqlite:///...") to swap engines.
 
 app.add_middleware(
     CORSMiddleware,
@@ -360,15 +362,15 @@ async def health():
     app deliberately supports DB-less operation; only an actual DB *error*
     flips the status to "degraded" + 503."""
     db_state = "not_configured"
-    if SessionLocal is not None:
+    if db.SessionLocal is not None:
         try:
-            db = SessionLocal()
+            session = db.SessionLocal()
             try:
                 from sqlalchemy import text
-                db.execute(text("SELECT 1"))
+                session.execute(text("SELECT 1"))
                 db_state = "ok"
             finally:
-                db.close()
+                session.close()
         except Exception as e:
             log.exception("health check: db ping failed: %s", e)
             return Response(
@@ -575,9 +577,9 @@ def _save_exercise_to_db(config: ExerciseConfig, artifacts: ExerciseArtifacts) -
     """Persist artifacts to the exercises table. Returns the new id, or None
     if no DB is configured. Caller must check `artifacts.cancelled` first —
     cancelled artifacts have nothing to persist."""
-    if not SessionLocal:
+    if not db.SessionLocal:
         return None
-    db = SessionLocal()
+    session = db.SessionLocal()
     try:
         ex = Exercise(
             name=config.exercise_name,
@@ -589,12 +591,12 @@ def _save_exercise_to_db(config: ExerciseConfig, artifacts: ExerciseArtifacts) -
             medroe_text=artifacts.medroe,
             matrix_snapshot=artifacts.matrix_snapshot,
         )
-        db.add(ex)
-        db.commit()
-        db.refresh(ex)
+        session.add(ex)
+        session.commit()
+        session.refresh(ex)
         return ex.id
     finally:
-        db.close()
+        session.close()
 
 
 def _build_zip(config: ExerciseConfig, artifacts: ExerciseArtifacts) -> BytesIO:
@@ -908,17 +910,17 @@ async def download_job_zip(job_id: str):
         raise HTTPException(status_code=404, detail="job not found")
     if record.status != JobStatus.complete:
         raise HTTPException(status_code=409, detail=f"job not complete (status={record.status.value})")
-    if record.exercise_id is None or not SessionLocal:
+    if record.exercise_id is None or not db.SessionLocal:
         raise HTTPException(status_code=404, detail="no exercise persisted for this job")
     return await download_exercise(record.exercise_id)
 
 @app.get("/exercises", tags=["exercises"], summary="List exercises (newest first)")
 async def list_exercises():
-    if not SessionLocal:
+    if not db.SessionLocal:
         return {"exercises": []}
-    db = SessionLocal()
+    session = db.SessionLocal()
     try:
-        exs = db.query(Exercise).order_by(Exercise.created_at.desc()).all()
+        exs = session.query(Exercise).order_by(Exercise.created_at.desc()).all()
         exercises_list = []
         for e in exs:
             try:
@@ -952,20 +954,20 @@ async def list_exercises():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        db.close()
+        session.close()
 
 @app.get("/exercises/{exercise_id}", tags=["exercises"], summary="Single exercise (full payload)")
 async def get_exercise(exercise_id: int):
-    if not SessionLocal:
+    if not db.SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")
-    db = SessionLocal()
+    session = db.SessionLocal()
     try:
-        ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+        ex = session.query(Exercise).filter(Exercise.id == exercise_id).first()
         if not ex:
             raise HTTPException(status_code=404, detail="Not found")
         return {"id": ex.id, "name": ex.name, "created_at": ex.created_at.isoformat() if ex.created_at else None, "config": ex.config, "cases": ex.cases, "msel_data": ex.msel_data}
     finally:
-        db.close()
+        session.close()
 
 @app.get(
     "/exercises/{exercise_id}/download",
@@ -973,11 +975,11 @@ async def get_exercise(exercise_id: int):
     summary="Rebuild and download the full ZIP for a stored exercise",
 )
 async def download_exercise(exercise_id: int):
-    if not SessionLocal:
+    if not db.SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")
-    db = SessionLocal()
+    session = db.SessionLocal()
     try:
-        ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+        ex = session.query(Exercise).filter(Exercise.id == exercise_id).first()
         if not ex:
             raise HTTPException(status_code=404, detail="Not found")
 
@@ -1005,7 +1007,7 @@ async def download_exercise(exercise_id: int):
         zip_buf.seek(0)
         return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
     finally:
-        db.close()
+        session.close()
 
 @app.get(
     "/exercises/{exercise_id}/document/{doc_type}",
@@ -1013,14 +1015,14 @@ async def download_exercise(exercise_id: int):
     summary="Rebuild a single document (msel | warno | annex_q | medroe | case_book)",
 )
 async def download_document(exercise_id: int, doc_type: str):
-    if not SessionLocal:
+    if not db.SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")
     if doc_type not in ["msel", "warno", "annex_q", "medroe", "case_book"]:
         raise HTTPException(status_code=400, detail="Invalid doc type")
-    
-    db = SessionLocal()
+
+    session = db.SessionLocal()
     try:
-        ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+        ex = session.query(Exercise).filter(Exercise.id == exercise_id).first()
         if not ex:
             raise HTTPException(status_code=404, detail="Not found")
 
@@ -1051,4 +1053,4 @@ async def download_document(exercise_id: int, doc_type: str):
         
         return Response(buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{fn}"'}, media_type=mt)
     finally:
-        db.close()
+        session.close()

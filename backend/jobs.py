@@ -463,9 +463,9 @@ def get_job_store() -> JobStore:
     InMemoryJobStore otherwise."""
     global _store
     if _store is None:
-        from .db import SessionLocal
-        if SessionLocal is not None:
-            _store = PostgresJobStore(SessionLocal)
+        from . import db
+        if db.SessionLocal is not None:
+            _store = PostgresJobStore(db.SessionLocal)
         else:
             _store = InMemoryJobStore()
     return _store

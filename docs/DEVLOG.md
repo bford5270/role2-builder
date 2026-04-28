@@ -18,6 +18,46 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — DB late-init refactor + 16 deferred integration tests
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Status going in:** Polish pass committed (052df5b), 126 tests green. The "DB-backed `/exercises/{id}/download` integration tests" gap I admitted in the production-readiness pass was still open — `db.py` captured `SessionLocal` at import time, so tests couldn't inject SQLite.
+
+**Done this session:**
+
+*db.py late initialization:*
+- `init_db(database_url=None)` is now idempotent and reconfigurable — pass an explicit URL to swap engines, or omit to read `DATABASE_URL` from env. Recreates schema on the new engine.
+- Module-level `engine` and `SessionLocal` are now mutable globals; production callers and tests both look them up at call time via attribute access on the `db` module.
+- SQLite handling: `connect_args={"check_same_thread": False}` for any SQLite URL; `StaticPool` for `:memory:` URLs so all sessions share the same in-memory DB (otherwise each connection gets its own — schema invisible).
+
+*main.py call-site updates (~13 sites):*
+- `from backend.db import SessionLocal` → `from backend import db` + `db.SessionLocal`. Attribute lookup at call time picks up live mutations.
+- Renamed local session variables from `db` to `session` everywhere they would have shadowed the module reference. Matches SQLAlchemy 2.0 idiom anyway.
+- Removed the redundant `init_db()` call at the top of main.py — `db.py` already runs it on its own first import. The redundant call clobbered SQLite state set up in test fixtures.
+
+*jobs.py + matrix_store.py:*
+- Same `from .db import SessionLocal` → `from . import db` + `db.SessionLocal` swap inside their store factories. They were already lazy-importing inside functions, so this is a one-line touch each.
+
+*New tests (`test_db_endpoints.py`, +16):*
+- Autouse `_sqlite_db` fixture per test: `db.init_db("sqlite:///:memory:")` + reset all dependent singletons (jobs store, matrix store, provider cache). Teardown returns to env-based config.
+- `TestHealthWithDb`: `/health` reports `db: "ok"` when SQLite is wired up (was previously untested).
+- `TestExercisesList`: empty start, single insertion, newest-first ordering.
+- `TestExerciseDetail`: 404 + full-payload happy path.
+- `TestExerciseDownload`: 404 + ZIP rebuild with all five documents.
+- `TestSingleDocumentDownload`: parametrized over (msel, warno, annex_q, medroe, case_book) — each rebuilds with the right MIME and Content-Disposition; invalid doc type returns 400.
+- `TestJobDownloadEndToEnd`: submit via `/jobs/generate-exercise`, wait for `complete`, hit `/jobs/{id}/download` — verifies the route through `download_exercise(exercise_id)` with a real persisted row.
+- `TestMatrixSnapshotPersisted`: PUT an override → generate → query the Exercise row directly → confirm `matrix_snapshot.trauma_ratio_by_setting["Defensive Operations"] == 0.91`. End-to-end snapshot persistence verified.
+- All 142 tests pass in ~5s.
+
+*Test fix (carry-over from refactor):*
+- `test_pipeline_snapshot.py::test_save_helper_passes_snapshot_to_orm` previously patched `main.SessionLocal`. Refactored to patch `db.SessionLocal` and split into two phases (run pipeline first with no DB → in-memory matrix store, then patch SessionLocal for the persist step). Otherwise the matrix-store factory picks up the fake too and tries to `.query()` it.
+
+**README updated:** test count (126 → 142), known-gaps section drops the "DB-backed integration tests deferred" item.
+
+**Open questions / blockers:** unchanged — `FOR_REVIEW_matrices_and_mets.md` pending SME / user sign-off; Bedrock + Phase 7 still parked. No frontend tests yet (Vitest/Playwright would be the next big gap).
+
+---
+
 ## 2026-04-29 (continued) — Polish pass: README, OpenAPI tags, ExerciseArtifacts dataclass, matrices skeleton
 
 **Branch:** `claude/review-schedule-issues-pjHcI`

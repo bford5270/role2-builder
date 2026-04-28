@@ -97,9 +97,18 @@ class TestPipelineSnapshot:
     def test_save_helper_passes_snapshot_to_orm(self, monkeypatch):
         """When DB is configured, `_save_exercise_to_db` writes
         `matrix_snapshot` onto the Exercise row. Without a real DB we
-        intercept the SessionLocal to assert the field is included."""
-        from backend import main
+        intercept the SessionLocal to assert the field is included.
 
+        Run the pipeline first (no DB → in-memory matrix store), then patch
+        SessionLocal only for the persist step. Otherwise the matrix-store
+        factory would pick up the fake too and try to .query() it.
+        """
+        from backend import db, main
+
+        # Phase 1: build artifacts with no DB.
+        artifacts = asyncio.run(main._run_exercise_pipeline(_config()))
+
+        # Phase 2: patch SessionLocal and call the save helper directly.
         captured: Dict[str, Any] = {}
 
         class _FakeSession:
@@ -112,12 +121,7 @@ class TestPipelineSnapshot:
             def close(self):
                 pass
 
-        def _fake_session_local():
-            return _FakeSession()
-
-        monkeypatch.setattr(main, "SessionLocal", _fake_session_local)
-
-        artifacts = asyncio.run(main._run_exercise_pipeline(_config()))
+        monkeypatch.setattr(db, "SessionLocal", lambda: _FakeSession())
         new_id = main._save_exercise_to_db(_config(), artifacts)
         assert new_id == 42
         ex = captured["obj"]

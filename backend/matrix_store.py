@@ -277,9 +277,9 @@ _store: Optional[MatrixStore] = None
 def get_matrix_store() -> MatrixStore:
     global _store
     if _store is None:
-        from .db import SessionLocal
-        if SessionLocal is not None:
-            _store = PostgresMatrixStore(SessionLocal)
+        from . import db
+        if db.SessionLocal is not None:
+            _store = PostgresMatrixStore(db.SessionLocal)
         else:
             _store = InMemoryMatrixStore()
     return _store
