@@ -3,7 +3,6 @@ import random
 import json
 import asyncio
 import zipfile
-import traceback
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -24,6 +23,7 @@ from backend.matrices import TRAUMA_BY_ETIOLOGY, GENERAL_TRAUMA
 from backend.case_generator import generate_all_cases
 from backend.db import Exercise, SessionLocal, init_db
 from backend.jobs import JobStatus, get_job_semaphore, get_job_store
+from backend.logging_config import configure_logging, get_job_logger, get_logger
 from backend.matrix_store import (
     MatrixOverrides,
     MatrixView,
@@ -31,6 +31,9 @@ from backend.matrix_store import (
     get_matrix_store,
 )
 from backend.presets import apply_preset, list_presets
+
+configure_logging()
+log = get_logger(__name__)
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
@@ -331,7 +334,30 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    """Liveness + DB connectivity probe.
+
+    Returns 200 with `{status: "healthy", db: "ok|not_configured|error"}`. The
+    overall `status` stays "healthy" even when DB is unconfigured because the
+    app deliberately supports DB-less operation; only an actual DB *error*
+    flips the status to "degraded" + 503."""
+    db_state = "not_configured"
+    if SessionLocal is not None:
+        try:
+            db = SessionLocal()
+            try:
+                from sqlalchemy import text
+                db.execute(text("SELECT 1"))
+                db_state = "ok"
+            finally:
+                db.close()
+        except Exception as e:
+            log.exception("health check: db ping failed: %s", e)
+            return Response(
+                content=json.dumps({"status": "degraded", "db": "error", "detail": str(e)[:200]}),
+                status_code=503,
+                media_type="application/json",
+            )
+    return {"status": "healthy", "db": db_state}
 
 @app.post("/generate-name")
 async def generate_name_endpoint(data: dict):
@@ -357,8 +383,10 @@ def _fallback_for(item: BatchItem) -> Dict:
 
 
 def _log_progress(completed: int, total: int) -> None:
-    # Phase 4 will hook this to the ExerciseJob row; for now, log to stdout.
-    print(f"[case-gen] {completed}/{total}", flush=True)
+    """Default progress callback for the legacy sync endpoint.
+
+    Job-mode generation overrides this with one that writes to the JobStore."""
+    log.info("case-gen progress %d/%d", completed, total)
 
 
 async def _run_exercise_pipeline(
@@ -546,7 +574,7 @@ async def generate_exercise(config: ExerciseConfig):
     except HTTPException:
         raise
     except Exception as e:
-        traceback.print_exc()
+        log.exception("legacy /generate-exercise failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -561,11 +589,13 @@ async def _run_exercise_job_worker(job_id: str) -> None:
     sem = get_job_semaphore()
     record = await store.get(job_id)
     if record is None:
-        print(f"[job {job_id}] vanished before worker could pick it up", flush=True)
+        log.warning("job vanished before worker pickup", extra={"job_id": job_id})
         return
+    jlog = get_job_logger(job_id, exercise_name=record.config.get("exercise_name", "?"))
     try:
         config = ExerciseConfig(**record.config)
     except Exception as e:
+        jlog.exception("invalid config in queued job: %s", e)
         await store.mark_failed(job_id, f"invalid config: {e}")
         return
 
@@ -574,8 +604,10 @@ async def _run_exercise_job_worker(job_id: str) -> None:
         # touching the LLM at all.
         latest = await store.get(job_id)
         if latest and latest.status == JobStatus.cancelled:
+            jlog.info("cancelled before start; worker exiting")
             return
 
+        jlog.info("worker started; total_cases=%d", record.total_cases)
         await store.mark_running(job_id)
         loop = asyncio.get_running_loop()
 
@@ -586,12 +618,14 @@ async def _run_exercise_job_worker(job_id: str) -> None:
                 store.update_progress(job_id, completed=completed),
                 loop,
             )
+            jlog.debug("progress %d/%d", completed, total)
 
         async def on_phase(phase: str) -> None:
             # Avoid clobbering current_phase='cancelled' with a stale phase update.
             cur = await store.get(job_id)
             if cur and cur.status == JobStatus.cancelled:
                 return
+            jlog.info("phase=%s", phase, extra={"phase": phase})
             await store.update_progress(job_id, current_phase=phase)
 
         async def is_cancelled() -> bool:
@@ -608,6 +642,7 @@ async def _run_exercise_job_worker(job_id: str) -> None:
             if artifacts.get("cancelled"):
                 # Worker honored the cancel request; status was already set to
                 # cancelled by the request_cancel call. Just leave it there.
+                jlog.info("cancelled mid-pipeline; partial work discarded")
                 return
 
             await on_phase("packaging")
@@ -621,8 +656,14 @@ async def _run_exercise_job_worker(job_id: str) -> None:
                 exercise_id=exercise_id,
                 generation_summary=summary,
             )
+            jlog.info(
+                "complete: total=%d returned=%d fallback=%d errors=%d exercise_id=%s",
+                summary["total_requested"], summary["total_returned"],
+                summary["total_fallback"], len(summary.get("errors", [])),
+                exercise_id,
+            )
         except Exception as e:
-            traceback.print_exc()
+            jlog.exception("worker failed: %s", e)
             await store.mark_failed(job_id, str(e)[:1000])
 
 

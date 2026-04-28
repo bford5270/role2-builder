@@ -18,6 +18,40 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Production-readiness pass: structured logging, /health, .env.example, +15 tests
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Status going in:** Phase 6 complete (dd63f43, c8c9e9e), deprecation cleanup (e734777), `FOR_REVIEW_matrices_and_mets.md` posted (a64b3d4) for SME sign-off. Carry-forward list still had operational gaps and several untested production endpoints.
+
+**Done this session:**
+
+*Operational readiness:*
+- New `backend/logging_config.py`: idempotent `configure_logging()`, `get_logger(name)`, and a `get_job_logger(job_id, **ctx)` LoggerAdapter that auto-attaches a correlation id (`job_id`) plus arbitrary context (`exercise_name`, `phase`) to every record. Honors `LOG_LEVEL` and `LOG_FORMAT=json` env vars; JSON formatter surfaces the bound context as top-level fields for log aggregators.
+- `main.py` wired up: `configure_logging()` at import, `log = get_logger(__name__)` for module-level lines, `jlog = get_job_logger(job_id, exercise_name=...)` inside the worker. Replaced four `print()` / `traceback.print_exc()` sites with proper `log.info/warning/exception` calls. `_log_progress` (default progress callback) now logs through the logger instead of `print`.
+- `/health` upgraded: actually pings the DB via `SELECT 1` when `SessionLocal` is configured. Returns `{status: "healthy", db: "ok|not_configured"}` on success, `503 {status: "degraded", db: "error", detail: ...}` when the ping fails. Keeps the DB-less mode of operation a first-class state (`not_configured` is still healthy).
+- New `.env.example` at repo root documents every env var the app reads (provider selection, batch tuning, `DATABASE_URL`, `LOG_LEVEL`, `LOG_FORMAT`, `NEXT_PUBLIC_API_URL`) with brief inline guidance — onboarding is now self-serve.
+- Removed dead `import traceback` from `main.py`.
+
+*Test coverage (+15 tests; 111 → 126):*
+- `test_legacy_endpoints.py` (6): integration tests for `POST /generate-exercise` (asserts ZIP shape, file list, X-Generation-* headers, generation_summary body matches headers); `/health`; `/generate-name`; `/exercises` no-DB short-circuit. Previously these had zero HTTP-layer coverage.
+- `test_planner_properties.py` (6): Hypothesis property-based fuzzing of `build_day_plan`. Asserts category counts always partition the day's total cleanly, triage_targets always sum to total, no negative or zero-count buckets, MASCAL day honors `mascal_patients` floor, CBRN/detainee budgets carve cleanly, zero-patient day is valid (no crash), same seed → same plan. Hypothesis explores combinations example-based tests would never reach. All 6 pass; planner is robust under fuzzing.
+- `test_pipeline_snapshot.py` (3): asserts `matrix_snapshot` flows through `_run_exercise_pipeline` into the artifacts dict, reflects active overrides, and is forwarded to `_save_exercise_to_db` (verified via a fake SessionLocal).
+
+*Deferred (with reason):*
+- DB-backed `/exercises/{id}/download` and `/exercises/{id}/document/{type}` integration tests. Would require refactoring `db.py` for late initialization (callers `from backend.db import SessionLocal` capture the value at import time, so `monkeypatch.setenv("DATABASE_URL", ...)` after collection has no effect). Real refactor, not a quick add. Snapshot persistence is covered via the fake-Session pattern in `test_pipeline_snapshot.py`; the rebuild-from-DB ZIP path remains untested at the HTTP layer.
+
+**Sample JSON log output:**
+```
+{"ts": "...", "level": "INFO", "logger": "backend.jobs.worker", "message": "phase=generating_cases", "job_id": "demo", "exercise_name": "Operation Demo"}
+```
+
+**Open questions / blockers:**
+- `FOR_REVIEW_matrices_and_mets.md` still pending user / SME sign-off.
+- DB endpoint coverage gap above (small, deferrable).
+- Phase 7 (tablet runner) and Bedrock provider remain explicit non-starts pending product / GovCloud signal.
+
+---
+
 ## 2026-04-29 (continued) — Phase 6b complete: matrix configuration UI
 
 **Branch:** `claude/review-schedule-issues-pjHcI`
