@@ -1,0 +1,35 @@
+{
+  "label": "High-Intensity Contingency",
+  "description": "Near-peer conflict / high-intensity combat. Trauma dominates, severity skews critical, IED/VBIED weighted heavily across most settings. MASCAL distribution stays critical. DRAFT — pending SME review.",
+  "overrides": {
+    "trauma_ratio_by_setting": {
+      "Frontal Attack": 0.90,
+      "Amphibious Assault": 0.85,
+      "Convoy Operations": 0.78,
+      "Defensive Operations": 0.70,
+      "Retrograde Operations": 0.75,
+      "Stability Operations": 0.55,
+      "Humanitarian Assistance": 0.30
+    },
+    "threat_level_shift": {
+      "Low": {"trauma_ratio": -0.05, "t1_pp": -0.05, "t3_pp": 0.05},
+      "Medium": {"trauma_ratio": 0.05, "t1_pp": 0.05, "t3_pp": -0.05},
+      "High": {"trauma_ratio": 0.15, "t1_pp": 0.15, "t3_pp": -0.15}
+    },
+    "base_triage_distribution": {
+      "Frontal Attack": {"T1": 0.32, "T2": 0.42, "T3": 0.22, "T4": 0.04},
+      "Amphibious Assault": {"T1": 0.30, "T2": 0.42, "T3": 0.24, "T4": 0.04},
+      "Convoy Operations": {"T1": 0.27, "T2": 0.40, "T3": 0.30, "T4": 0.03},
+      "Defensive Operations": {"T1": 0.22, "T2": 0.40, "T3": 0.32, "T4": 0.06},
+      "Retrograde Operations": {"T1": 0.22, "T2": 0.40, "T3": 0.32, "T4": 0.06},
+      "Stability Operations": {"T1": 0.15, "T2": 0.35, "T3": 0.42, "T4": 0.08},
+      "Humanitarian Assistance": {"T1": 0.08, "T2": 0.30, "T3": 0.50, "T4": 0.12}
+    },
+    "mascal_triage_distribution": {"T1": 0.35, "T2": 0.40, "T3": 0.20, "T4": 0.05},
+    "etiology_by_setting": {
+      "Frontal Attack": ["IED/Blast", "Indirect Fire/Mortar", "GSW/Small Arms", "VBIED"],
+      "Convoy Operations": ["IED/Blast", "VBIED", "Vehicle Rollover", "GSW/Small Arms"],
+      "Defensive Operations": ["Indirect Fire/Mortar", "IED/Blast", "GSW/Small Arms", "VBIED"]
+    }
+  }
+}

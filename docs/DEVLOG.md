@@ -18,6 +18,58 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Phase 6a complete: matrix override backend + presets
+
+**Branch:** `claude/review-schedule-issues-pjHcI`
+**Phase:** Phase 6a — Matrix Configuration (backend)
+**Status going in:** Phase 5 committed (e3c1090), 90 tests green. The casualty / triage matrices in `matrices.py` are immutable module constants; instructors can't tune them without a code change.
+
+**Decisions confirmed before coding:**
+- Scope: headlines + list editors (trauma_ratio_by_setting, threat_level_shift, base_triage_distribution, mascal_triage_distribution, etiology_by_setting, dnbi_by_region, cbrn_etiologies). Defer the long DNBI_BY_ENVIRONMENT and TRAUMA_BY_ETIOLOGY tables.
+- Persistence: single global override + per-exercise snapshot. Each Exercise row carries the `MatrixView` it was generated against.
+- Auth: open access for now. Documented as a known gap.
+- Presets: reset button + named preset bundles shipped server-side (3 to start).
+
+**Done this session:**
+- `backend/matrix_store.py` (new):
+  - `MatrixOverrides` Pydantic model with optional fields per editable table; per-field validators (triage distributions sum to 1, ratios in [0,1], threat-level shift keys constrained, etc.).
+  - `MatrixView` — the merged view (defaults + overrides) the planner reads. `MatrixView.defaults()` snapshots `matrices.py`; `MatrixView.from_overrides(o)` produces the merged result.
+  - `MatrixStore` ABC + `InMemoryMatrixStore` (asyncio.Lock + model copies) + `PostgresMatrixStore` (single-row id=1, short-lived sessions via `asyncio.to_thread`).
+  - `get_matrix_store()` factory; `get_active_view()` helper for the pipeline; `reset_matrix_store_for_tests()`.
+- `backend/db.py`: added `MatrixSetting` SQLAlchemy model (singleton row) and `Exercise.matrix_snapshot` JSON column.
+- `backend/casualty_planner.py`: refactored `trauma_ratio`, `triage_distribution`, `_weighted_etiology_pool`, and `build_day_plan` to accept an optional `view: MatrixView`. Default falls back to module constants — every existing test continues to pass without modification. `dnbi_by_region` and `cbrn_etiologies` now read from the view too.
+- `backend/main.py`:
+  - `_run_exercise_pipeline` now reads the active view once and forwards to the planner.
+  - Pipeline returns `matrix_snapshot` in artifacts; `_save_exercise_to_db` persists it onto the Exercise row.
+  - New endpoints:
+    - `GET /settings/matrices` — overrides + merged view + defaults.
+    - `PUT /settings/matrices` — Pydantic-validated overrides write.
+    - `DELETE /settings/matrices` — clears overrides; planner reverts to defaults.
+    - `GET /settings/matrices/presets` — list shipped bundles.
+    - `POST /settings/matrices/presets/{name}/apply` — load preset into overrides.
+- `backend/presets.py` + `backend/preset_data/*.json` (new):
+  - `usmc_default.json` — empty overrides (explicit anchor).
+  - `permissive_humanitarian.json` — DNBI-skewed for HA/DR.
+  - `high_intensity_contingency.json` — near-peer combat with critical triage skew. All flagged DRAFT pending SME review.
+- `backend/tests/test_matrix_store.py` (new): 17 tests covering validation rejection, merge behavior, in-memory CRUD, planner reading overrides, and the settings endpoints (including preset application).
+- 111 tests passing total in ~1.5s.
+
+**Key design note:** the planner's existing tests didn't change. The optional `view` parameter defaults to `MatrixView.defaults()` which snapshots `matrices.py`, so legacy callers and tests behave identically.
+
+**Next (Phase 6b — Frontend matrix editor):**
+- `/settings/matrices` Next.js page with sections for each matrix.
+- Numeric editors with live "must sum to 1" validation for triage distributions; range checks for ratios.
+- List editors for etiology_by_setting / dnbi_by_region / cbrn_etiologies (add/remove rows).
+- Preset selector dropdown + Apply button.
+- Reset to defaults button.
+- Save button — diffs the form vs the loaded view, sends only changed fields as overrides.
+
+**Open questions / blockers:**
+- All draft preset values (especially high_intensity_contingency) need SME review before they ship as anything other than illustrative.
+- Pydantic / SQLAlchemy deprecation warnings still cosmetic.
+
+---
+
 ## 2026-04-29 (continued) — Phase 5 complete: frontend polling UX + graceful cancel
 
 **Branch:** `claude/review-schedule-issues-pjHcI`

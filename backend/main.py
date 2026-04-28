@@ -24,6 +24,13 @@ from backend.matrices import TRAUMA_BY_ETIOLOGY, GENERAL_TRAUMA
 from backend.case_generator import generate_all_cases
 from backend.db import Exercise, SessionLocal, init_db
 from backend.jobs import JobStatus, get_job_semaphore, get_job_store
+from backend.matrix_store import (
+    MatrixOverrides,
+    MatrixView,
+    get_active_view,
+    get_matrix_store,
+)
+from backend.presets import apply_preset, list_presets
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
@@ -376,6 +383,10 @@ async def _run_exercise_pipeline(
     if await _cancelled():
         return {"cancelled": True}
 
+    # Load the active matrix view once (defaults + any global overrides) and
+    # snapshot it onto the artifacts for /history.
+    matrix_view = await get_active_view()
+
     plans = []
     for day in config.days:
         plans.append(build_day_plan(
@@ -394,6 +405,7 @@ async def _run_exercise_pipeline(
             selected_footprint=config.selected_footprint,
             selected_mets=config.selected_mets,
             total_waves=day.total_waves,
+            view=matrix_view,
         ))
 
     if on_phase:
@@ -454,6 +466,7 @@ async def _run_exercise_pipeline(
         "annex": annex,
         "medroe": medroe,
         "generation_summary": generation_summary,
+        "matrix_snapshot": matrix_view.model_dump(),
         "cancelled": False,
     }
 
@@ -473,6 +486,7 @@ def _save_exercise_to_db(config: ExerciseConfig, artifacts: Dict[str, Any]) -> O
             warno_text=artifacts["warno"],
             annex_q_text=artifacts["annex"],
             medroe_text=artifacts["medroe"],
+            matrix_snapshot=artifacts.get("matrix_snapshot"),
         )
         db.add(ex)
         db.commit()
@@ -669,6 +683,65 @@ async def list_jobs(limit: int = 20):
             }
             for r in records
         ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Matrix configuration (Phase 6)
+# ---------------------------------------------------------------------------
+
+@app.get("/settings/matrices")
+async def get_matrix_settings():
+    """Return the current overrides plus the merged view the planner uses.
+
+    The frontend renders the merged view as the editable form and submits
+    overrides (only the fields that differ from defaults).
+    """
+    overrides = await get_matrix_store().get_overrides()
+    view = MatrixView.from_overrides(overrides)
+    return {
+        "overrides": overrides.model_dump(exclude_none=True),
+        "view": view.model_dump(),
+        "defaults": MatrixView.defaults().model_dump(),
+    }
+
+
+@app.put("/settings/matrices")
+async def put_matrix_settings(payload: MatrixOverrides):
+    """Validate (via Pydantic) and persist a new override blob. PUT replaces
+    all overrides; pass an empty body to clear them (or call DELETE)."""
+    await get_matrix_store().set_overrides(payload)
+    view = MatrixView.from_overrides(payload)
+    return {
+        "overrides": payload.model_dump(exclude_none=True),
+        "view": view.model_dump(),
+    }
+
+
+@app.delete("/settings/matrices")
+async def delete_matrix_settings():
+    """Reset overrides — the planner falls back to defaults shipped in matrices.py."""
+    await get_matrix_store().clear_overrides()
+    return {"reset": True, "view": MatrixView.defaults().model_dump()}
+
+
+@app.get("/settings/matrices/presets")
+async def get_matrix_presets():
+    return {"presets": list_presets()}
+
+
+@app.post("/settings/matrices/presets/{name}/apply")
+async def apply_matrix_preset(name: str):
+    try:
+        overrides = await apply_preset(name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"preset '{name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"preset '{name}' invalid: {e}")
+    return {
+        "applied": name,
+        "overrides": overrides.model_dump(exclude_none=True),
+        "view": MatrixView.from_overrides(overrides).model_dump(),
     }
 
 

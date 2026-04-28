@@ -48,6 +48,17 @@ class Exercise(Base):
     warno_text = Column(Text)
     annex_q_text = Column(Text)
     medroe_text = Column(Text)
+    # Snapshot of the merged MatrixView active when this exercise was generated.
+    # Lets /history show what casualty / triage matrices produced the cases.
+    matrix_snapshot = Column(JSON, nullable=True)
+
+
+class MatrixSetting(Base):
+    """Single-row table holding the global MatrixOverrides JSON. id is always 1."""
+    __tablename__ = "matrix_settings"
+    id = Column(Integer, primary_key=True)  # always 1; no auto-increment
+    overrides = Column(JSON, default=dict, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class ExerciseJob(Base):

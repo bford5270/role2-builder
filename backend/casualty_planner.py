@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from . import matrices as M  # noqa: F401  (used as M.* below)
+from .matrix_store import MatrixView
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +85,18 @@ def met_emphasis_tags(selected_mets: List[str]) -> List[str]:
 # Trauma : DNBI ratio
 # ---------------------------------------------------------------------------
 
-def trauma_ratio(setting: str, threat_level: str, is_mascal: bool) -> float:
+def trauma_ratio(
+    setting: str,
+    threat_level: str,
+    is_mascal: bool,
+    view: Optional[MatrixView] = None,
+) -> float:
+    view = view or MatrixView.defaults()
     if is_mascal:
         return M.MASCAL_TRAUMA_RATIO
-    base = M.TRAUMA_RATIO_BY_SETTING.get(setting, M.DEFAULT_TRAUMA_RATIO)
-    delta = M.THREAT_LEVEL_SHIFT.get(threat_level, M.THREAT_LEVEL_SHIFT["Medium"])["trauma_ratio"]
+    base = view.trauma_ratio_by_setting.get(setting, M.DEFAULT_TRAUMA_RATIO)
+    shift = view.threat_level_shift.get(threat_level) or view.threat_level_shift["Medium"]
+    delta = shift.get("trauma_ratio", 0.0)
     lo, hi = M.TRAUMA_RATIO_BOUNDS
     return max(lo, min(hi, base + delta))
 
@@ -117,13 +125,16 @@ def triage_distribution(
     threat_level: str,
     is_mascal: bool,
     night_ops: bool,
+    view: Optional[MatrixView] = None,
 ) -> Dict[str, float]:
+    view = view or MatrixView.defaults()
     base = (
-        M.MASCAL_TRIAGE_DISTRIBUTION
+        view.mascal_triage_distribution
         if is_mascal
-        else M.BASE_TRIAGE_DISTRIBUTION.get(setting, M.DEFAULT_TRIAGE_DISTRIBUTION)
+        else view.base_triage_distribution.get(setting, M.DEFAULT_TRIAGE_DISTRIBUTION)
     )
-    shifted = _shift_distribution(base, M.THREAT_LEVEL_SHIFT.get(threat_level, M.THREAT_LEVEL_SHIFT["Medium"]))
+    shift = view.threat_level_shift.get(threat_level) or view.threat_level_shift["Medium"]
+    shifted = _shift_distribution(base, shift)
     if night_ops:
         shifted = _shift_distribution(shifted, M.NIGHT_OPS_TRIAGE_SHIFT)
     return shifted
@@ -152,12 +163,14 @@ def _weighted_etiology_pool(
     environment: str,
     mascal_etiology: Optional[str],
     is_mascal: bool,
+    view: Optional[MatrixView] = None,
 ) -> List[str]:
     """Ordered, possibly repeated list of etiologies; later entries are 'flavor'."""
+    view = view or MatrixView.defaults()
+    setting_pool = view.etiology_by_setting.get(setting, [])
     if is_mascal and mascal_etiology:
         # MASCAL day: 70% of mechanism is the chosen etiology, rest is setting flavor.
-        return [mascal_etiology] * 7 + M.ETIOLOGY_BY_SETTING.get(setting, [])
-    setting_pool = M.ETIOLOGY_BY_SETTING.get(setting, [])
+        return [mascal_etiology] * 7 + setting_pool
     env_pool = M.ENVIRONMENT_TRAUMA_FLAVOR.get(environment, [])
     # Setting-characteristic etiologies weight 3x; environment flavor 1x.
     return setting_pool * 3 + env_pool
@@ -233,13 +246,18 @@ def build_day_plan(
     selected_mets: List[str],
     total_waves: int = 3,
     seed: Optional[int] = None,
+    view: Optional[MatrixView] = None,
 ) -> DayPlan:
     """Build a deterministic plan for one day.
 
     The same inputs (with the same seed) produce the same plan. The case
     generator consumes `etiology_buckets` and the schedule builder consumes
     `triage_targets` + arrival logic later.
+
+    `view` lets callers pass a MatrixView with global overrides applied;
+    omitting it falls back to the defaults shipped in matrices.py.
     """
+    view = view or MatrixView.defaults()
     rng = random.Random(seed if seed is not None else (day_number * 1000 + hash(tactical_setting)) & 0x7fffffff)
     notes: List[str] = []
 
@@ -266,7 +284,7 @@ def build_day_plan(
         remaining -= detainee_count
         notes.append(f"Detainee ops day: {detainee_count} detainee patients carved from total.")
 
-    ratio = trauma_ratio(tactical_setting, threat_level, mascal)
+    ratio = trauma_ratio(tactical_setting, threat_level, mascal, view=view)
     trauma_count = round(remaining * ratio)
     dnbi_count = remaining - trauma_count
 
@@ -277,7 +295,7 @@ def build_day_plan(
         dnbi_count = remaining - trauma_count
 
     # ---- 2. Day-level triage distribution (intent) ----
-    dist = triage_distribution(tactical_setting, threat_level, mascal, night_ops)
+    dist = triage_distribution(tactical_setting, threat_level, mascal, night_ops, view=view)
 
     # ---- 3. Build buckets per category ----
     # Each category uses a normalized distribution + its own total. We compute
@@ -291,6 +309,7 @@ def build_day_plan(
         environment=environment,
         mascal_etiology=mascal_etiology,
         is_mascal=mascal,
+        view=view,
     )
     if trauma_count > 0 and trauma_pool:
         trauma_triage_counts = _largest_remainder(dist, trauma_count)
@@ -301,17 +320,18 @@ def build_day_plan(
             triage_counts=trauma_triage_counts,
         ))
 
-    # DNBI (environment + region)
+    # DNBI (environment + region; region pool now comes from the view so UI
+    # edits to DNBI_BY_REGION take effect immediately).
     if dnbi_count > 0:
         dnbi_pool = (
             M.DNBI_BY_ENVIRONMENT.get(environment, [])
             + M.DNBI_BY_ENVIRONMENT.get("General", [])
-            + (M.DNBI_BY_REGION.get(region or "", []) if region else [])
+            + (view.dnbi_by_region.get(region or "", []) if region else [])
         )
         if not dnbi_pool:
             dnbi_pool = M.DNBI_BY_ENVIRONMENT["General"]
         # DNBI skews toward T2/T3/T4 — re-weight against MASCAL distribution if present.
-        dnbi_dist = M.BASE_TRIAGE_DISTRIBUTION.get(tactical_setting, M.DEFAULT_TRIAGE_DISTRIBUTION)
+        dnbi_dist = view.base_triage_distribution.get(tactical_setting, M.DEFAULT_TRIAGE_DISTRIBUTION)
         dnbi_triage_counts = _largest_remainder(dnbi_dist, dnbi_count)
         buckets.extend(_make_buckets_for(
             rng,
@@ -323,7 +343,7 @@ def build_day_plan(
     # CBRN
     if cbrn_count > 0:
         cbrn_etiologies: List[str] = []
-        for variants in M.CBRN_ETIOLOGIES.values():
+        for variants in view.cbrn_etiologies.values():
             cbrn_etiologies.extend(variants)
         # CBRN cases are mostly T1/T2 — life-threatening physiology.
         cbrn_dist = {"T1": 0.40, "T2": 0.40, "T3": 0.15, "T4": 0.05}
