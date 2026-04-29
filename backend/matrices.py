@@ -25,7 +25,7 @@ TRAUMA_RATIO_BY_SETTING: Dict[str, float] = {
     "Defensive Operations":   0.55,
     "Retrograde Operations":  0.60,
     "Stability Operations":   0.40,
-    "Humanitarian Assistance": 0.20,
+    "Humanitarian Assistance": 0.30,  # Reviewer 29APR2026: bumped from 0.20.
 }
 
 DEFAULT_TRAUMA_RATIO = 0.50
@@ -76,26 +76,33 @@ MASCAL_TRIAGE_DISTRIBUTION = {"T1": 0.30, "T2": 0.40, "T3": 0.25, "T4": 0.05}
 # planner samples from this list (weighted toward the front) for trauma cases
 # on non-MASCAL days. On MASCAL days, mascal_etiology dominates.
 
+# Reviewer 29APR2026: "Fragmentation Drones" added to every setting at the front
+# of the pool — current OEF / Ukraine theater dominated by FPV / fragmentation
+# UAS munitions. Frontal Attack additionally gets it weighted heavier upstream
+# (the planner samples from the front of the list).
 ETIOLOGY_BY_SETTING: Dict[str, List[str]] = {
-    "Frontal Attack":          ["GSW/Small Arms", "Indirect Fire/Mortar", "IED/Blast"],
-    "Amphibious Assault":      ["Drowning (Amphibious)", "GSW/Small Arms", "IED/Blast", "Vehicle Rollover"],
-    "Convoy Operations":       ["IED/Blast", "Vehicle Rollover", "GSW/Small Arms", "VBIED"],
-    "Defensive Operations":    ["Indirect Fire/Mortar", "GSW/Small Arms", "IED/Blast"],
-    "Retrograde Operations":   ["IED/Blast", "Vehicle Rollover", "Indirect Fire/Mortar"],
-    "Stability Operations":    ["IED/Blast", "GSW/Small Arms", "VBIED"],
-    "Humanitarian Assistance": ["Vehicle Rollover", "Structural Collapse", "Burns/Fire"],
+    "Frontal Attack":          ["Fragmentation Drones", "GSW/Small Arms", "Indirect Fire/Mortar", "IED/Blast"],
+    "Amphibious Assault":      ["Fragmentation Drones", "Drowning (Amphibious)", "GSW/Small Arms", "IED/Blast", "Vehicle Rollover"],
+    "Convoy Operations":       ["Fragmentation Drones", "IED/Blast", "Vehicle Rollover", "GSW/Small Arms", "VBIED"],
+    "Defensive Operations":    ["Fragmentation Drones", "Indirect Fire/Mortar", "GSW/Small Arms", "IED/Blast"],
+    "Retrograde Operations":   ["Fragmentation Drones", "IED/Blast", "Vehicle Rollover", "Indirect Fire/Mortar"],
+    "Stability Operations":    ["Fragmentation Drones", "IED/Blast", "GSW/Small Arms", "VBIED"],
+    "Humanitarian Assistance": ["Fragmentation Drones", "Vehicle Rollover", "Structural Collapse", "Burns/Fire"],
 }
 
 # Trauma mechanism flavor by environment. Stacks with ETIOLOGY_BY_SETTING.
+# Reviewer 29APR2026: Arctic + General gain "Fragmentation Drones" — UAS reach
+# is environment-agnostic, so flavor it everywhere even when there's no other
+# environmental mechanism.
 ENVIRONMENT_TRAUMA_FLAVOR: Dict[str, List[str]] = {
     "Desert":   ["Vehicle Rollover", "Burns/Fire"],
     "Jungle":   ["Structural Collapse", "Drowning (Amphibious)"],
-    "Arctic":   [],
+    "Arctic":   ["Fragmentation Drones"],
     "Mountain": ["Structural Collapse"],
     "Maritime": ["Drowning (Amphibious)", "Aviation Mishap"],
     "Littoral": ["Drowning (Amphibious)"],
     "Urban":    ["Structural Collapse", "VBIED"],
-    "General":  [],
+    "General":  ["Fragmentation Drones"],
 }
 
 
@@ -105,35 +112,65 @@ ENVIRONMENT_TRAUMA_FLAVOR: Dict[str, List[str]] = {
 # Existing DNBI_BY_ENVIRONMENT lives in main.py; reproduced here for the
 # planner. Trim duplicates when main.py is refactored to import from here.
 
+# Reviewer 29APR2026: broaden environment DNBI with a mix of severities (mild
+# T3/T4 candidates through severe T1/T2 candidates), per "use a variety of
+# severities" review note. Original entries kept; additions append.
 DNBI_BY_ENVIRONMENT: Dict[str, List[str]] = {
     "Jungle":   ["Dengue hemorrhagic fever", "Malaria", "Snake envenomation",
-                 "Cellulitis", "Heat exhaustion", "Leptospirosis"],
+                 "Cellulitis", "Heat exhaustion", "Leptospirosis",
+                 "Severe falciparum malaria with cerebral involvement",
+                 "Cellulitis with abscess formation", "Tropical pyomyositis"],
     "Desert":   ["Heat stroke", "Severe dehydration", "Scorpion envenomation",
-                 "Sand fly fever", "Rhabdomyolysis"],
-    "Arctic":   ["Severe frostbite", "Hypothermia", "Trench foot", "Cold urticaria"],
+                 "Sand fly fever", "Rhabdomyolysis",
+                 "Severe rhabdomyolysis with acute kidney injury",
+                 "Mild heat exhaustion", "Acute upper respiratory infection (dust)"],
+    "Arctic":   ["Severe frostbite", "Hypothermia", "Trench foot", "Cold urticaria",
+                 "Severe hypothermia with cardiac instability",
+                 "Snow blindness", "CO poisoning from snow shelter"],
     "Maritime": ["Near-drowning", "Decompression sickness",
-                 "Marine envenomation", "Saltwater aspiration"],
-    "Urban":    ["Crush injury", "Smoke inhalation", "MSK overuse", "CO poisoning"],
-    "Mountain": ["HAPE", "HACE", "Acute mountain sickness", "Fall with fractures"],
+                 "Marine envenomation", "Saltwater aspiration",
+                 "Severe marine envenomation with anaphylaxis",
+                 "Otitis externa", "Mild seasickness"],
+    "Urban":    ["Crush injury", "Smoke inhalation", "MSK overuse", "CO poisoning",
+                 "Severe smoke inhalation with airway burn",
+                 "Acute viral gastroenteritis (outbreak)",
+                 "Acute psychiatric crisis (urban combat)"],
+    "Mountain": ["HAPE", "HACE", "Acute mountain sickness", "Fall with fractures",
+                 "Severe HACE with herniation risk",
+                 "Mild AMS responsive to descent", "Frostbite of digits"],
     "Littoral": ["Near-drowning", "Jellyfish envenomation",
-                 "Coral cuts with infection", "Heat exhaustion"],
+                 "Coral cuts with infection", "Heat exhaustion",
+                 "Severe bacterial wound infection from coral abrasion",
+                 "Mild jellyfish sting"],
     "General":  ["Combat stress reaction", "Dental emergency",
                  "Acute appendicitis", "Kidney stones",
-                 "Pneumonia", "Gastroenteritis"],
+                 "Pneumonia", "Gastroenteritis",
+                 "Severe sepsis from urinary source",
+                 "Acute psychiatric emergency", "Diabetic ketoacidosis"],
 }
 
 # Region adds endemic / theater-specific patterns on top of environment DNBI.
-# DRAFT — confirm against current intel/medical theater estimates.
+# Reviewer 29APR2026: same broaden-with-severity treatment as environment DNBI.
 DNBI_BY_REGION: Dict[str, List[str]] = {
     "CENTCOM":   ["Cutaneous leishmaniasis", "Q fever", "MERS-CoV exposure",
-                  "Acute viral hepatitis"],
+                  "Acute viral hepatitis",
+                  "Severe sand fly fever", "Brucellosis"],
     "INDOPACOM": ["Japanese encephalitis", "Scrub typhus",
-                  "Plasmodium vivax malaria", "Melioidosis"],
+                  "Plasmodium vivax malaria", "Melioidosis",
+                  "Severe scrub typhus with multiorgan failure",
+                  "Tsutsugamushi disease (mild presentation)"],
     "AFRICOM":   ["Falciparum malaria", "Lassa fever exposure",
-                  "Schistosomiasis", "Typhoid"],
-    "EUCOM":     ["Tick-borne encephalitis", "Lyme disease", "Hantavirus"],
-    "SOUTHCOM":  ["Dengue", "Chagas exposure", "Zika"],
-    "NORTHCOM":  ["Seasonal influenza", "Rocky Mountain spotted fever"],
+                  "Schistosomiasis", "Typhoid",
+                  "Severe falciparum malaria with cerebral involvement",
+                  "Yellow fever (severe)"],
+    "EUCOM":     ["Tick-borne encephalitis", "Lyme disease", "Hantavirus",
+                  "Severe Lyme disease with cardiac involvement",
+                  "Tularemia"],
+    "SOUTHCOM":  ["Dengue", "Chagas exposure", "Zika",
+                  "Severe leptospirosis (Weil's disease)",
+                  "Yellow fever"],
+    "NORTHCOM":  ["Seasonal influenza", "Rocky Mountain spotted fever",
+                  "West Nile virus", "Lyme disease"],
 }
 
 
@@ -172,6 +209,15 @@ TRAUMA_BY_ETIOLOGY: Dict[str, List[str]] = {
                                "Severe burns with TBI",
                                "Traumatic amputation bilateral",
                                "Penetrating torso wounds"],
+    # Reviewer 29APR2026: small-munition UAS injury pattern — predominantly
+    # penetrating fragments to face/neck/torso, FPV-targeted limb amputations
+    # against exposed personnel, and TBI from proximate detonation.
+    "Fragmentation Drones":   ["Multiple penetrating fragment wounds (face/neck)",
+                               "Traumatic amputation of digits/hand from FPV strike",
+                               "Penetrating eye injury with globe rupture",
+                               "TBI from proximate drone detonation",
+                               "Penetrating thoracic injury with hemothorax",
+                               "Severe shrapnel wounds to extremities with vascular injury"],
 }
 
 GENERAL_TRAUMA: List[str] = [
@@ -245,20 +291,29 @@ ICU_FOOTPRINT_KEYWORDS = [
 # ---------------------------------------------------------------------------
 # MET → case bias hints
 # ---------------------------------------------------------------------------
-# DRAFT — canonical MET list pending from user. Each MET maps to a list of
-# boost hints (etiology or category strings) the planner uses to weight
-# selection. Unknown METs are silently ignored.
+# Keys here match the Tier 1 Battalion Core METL from NAVMC 3500.84A
+# (Ch.2 ¶2000), aligned with the frontend's MET_DATA (src/app/page.tsx).
+#
+# Each MET maps to a list of boost tags (etiology / category / triage code)
+# the planner uses to weight case selection when that MET is in `selected_mets`.
+# Unknown METs are silently ignored.
+#
+# The full canonical list — Tier 2 collective events (HSS-OPS-*, HSS-PLAN-*,
+# HSS-SVCS-*) and Tier 3 individual events (HSS-MED-*, 8404-HSS-*, CLIN-HSS-*)
+# — lives in `docs/FOR_REVIEW_matrices_and_mets.md` §16 for reference; only
+# the Tier 1 set is wired into the planner today, since those are what the UI
+# exposes as MET checkboxes.
 
 MET_BIAS: Dict[str, List[str]] = {
-    "Conduct Damage Control Surgery":        ["surgical"],
-    "Conduct Damage Control Resuscitation":  ["surgical", "T1"],
-    "Manage MASCAL":                         ["IED/Blast", "VBIED", "T1"],
-    "Conduct Patient Movement":              ["evac"],
-    "Provide Prolonged Casualty Care":       ["PCC"],
-    "Treat CBRN Casualties":                 ["cbrn"],
-    "Provide Behavioral Health Support":     ["Combat stress reaction"],
-    "Provide Dental Care":                   ["Dental emergency"],
-    "Manage Detainee Healthcare":            ["detainee"],
+    # Tier 1 — Battalion Core METL (NAVMC 3500.84A Ch.2 ¶2000)
+    "Provide Task-Organized Forces":        [],                                    # MCT 1.1.2 — planning, no case bias
+    "Support Amphibious Operations":        ["Drowning (Amphibious)"],             # MCT 1.12.2
+    "Conduct Casualty Treatment":           ["surgical", "T1"],                    # MCT 4.5.3
+    "Conduct Temporary Casualty Holding":   ["PCC"],                               # MCT 4.5.4
+    "Conduct Casualty Evacuation":          ["evac"],                              # MCT 4.5.5
+    "Conduct Mass Casualty Operations":     ["IED/Blast", "VBIED", "Fragmentation Drones", "T1"],  # MCT 4.5.6
+    "Conduct and Provide Dental Services":  ["Dental emergency"],                  # MCT 4.5.7
+    "Conduct Medical Regulating Services":  ["evac"],                              # MCT 4.5.8
 }
 
 
@@ -284,4 +339,5 @@ PHASES_BY_CATEGORY = {
 SURGICAL_ETIOLOGIES = {
     "IED/Blast", "VBIED", "GSW/Small Arms", "Vehicle Rollover",
     "Aviation Mishap", "Structural Collapse",
+    "Fragmentation Drones",  # Reviewer 29APR2026: predominantly fragment / amputation patterns.
 }

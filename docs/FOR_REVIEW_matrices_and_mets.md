@@ -1,6 +1,6 @@
 # FOR REVIEW — Matrices and METs
 
-**Status:** awaiting SME / user review.
+**Status:** ✅ Applied 29APR2026 (BSF). Edits translated into `backend/matrices.py`; tests pass (142/142). This file is kept for traceability — see `docs/DEVLOG.md` "Reviewer pass" entry for the diff summary.
 **Source of truth today:** `backend/matrices.py` (numeric defaults), `backend/preset_data/*.json` (preset bundles).
 
 ## How to use this document

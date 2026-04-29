@@ -68,9 +68,21 @@ class TestEnvironment:
     """B3: environment should also flavor trauma, not just DNBI."""
 
     def test_desert_adds_rollover_flavor(self):
-        plan = _plan(tactical_setting="Defensive Operations", environment="Desert", total_patients=30)
-        trauma_etiologies = {b.etiology for b in plan.etiology_buckets if b.category.startswith("trauma")}
-        assert "Vehicle Rollover" in trauma_etiologies or any("Burns" in e for e in trauma_etiologies)
+        # Stochastic — Desert flavor stacks on a longer setting pool now that
+        # Fragmentation Drones is universal, so sample across seeds to confirm
+        # the environment flavor still surfaces. Mirrors the seed-sweep
+        # pattern in TestRegion below.
+        for seed in range(20):
+            plan = _plan(
+                tactical_setting="Defensive Operations",
+                environment="Desert",
+                total_patients=30,
+                seed=seed,
+            )
+            trauma_etiologies = {b.etiology for b in plan.etiology_buckets if b.category.startswith("trauma")}
+            if "Vehicle Rollover" in trauma_etiologies or any("Burns" in e for e in trauma_etiologies):
+                return
+        raise AssertionError("Desert flavor never surfaced across 20 seeds")
 
 
 class TestRegion:
@@ -162,7 +174,10 @@ class TestMETs:
     """B9: selected METs should at least be recorded as emphasis tags."""
 
     def test_met_emphasis_recorded(self):
-        plan = _plan(selected_mets=["Conduct Damage Control Surgery"])
+        # Reviewer 29APR2026: MET_BIAS aligned to the canonical Tier 1 MET
+        # names from NAVMC 3500.84A; the old illustrative names ("Conduct
+        # Damage Control Surgery" etc.) were removed.
+        plan = _plan(selected_mets=["Conduct Casualty Treatment"])
         assert "surgical" in plan.met_emphasis
 
     def test_unknown_met_ignored(self):

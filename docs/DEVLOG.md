@@ -18,6 +18,54 @@ Format:
 
 ---
 
+## 2026-04-29 — Reviewer pass: BSF edits applied to matrices.py
+
+**Branch:** `claude/review-schedule-issues-pjHcI` (PR #1)
+**Status going in:** PR open; `docs/FOR_REVIEW_matrices_and_mets.md` returned with reviewer edits in `5e64340`.
+
+**Edits translated:**
+
+*Numeric:*
+- `TRAUMA_RATIO_BY_SETTING["Humanitarian Assistance"]` 0.20 → **0.30**.
+
+*New etiology — `Fragmentation Drones`* (per reviewer note "amplify presence and damage from unmanned aerial systems"):
+- Added to `TRAUMA_BY_ETIOLOGY` with a 6-item injury menu: penetrating fragments to face/neck, FPV-targeted limb amputations, penetrating eye injuries with globe rupture, TBI from proximate detonation, penetrating thoracic injury with hemothorax, severe shrapnel wounds with vascular injury.
+- Inserted at the **front** of every setting's `ETIOLOGY_BY_SETTING` pool (Frontal Attack, Amphibious Assault, Convoy Operations, Defensive Operations, Retrograde Operations, Stability Operations, Humanitarian Assistance) — planner samples weighted toward the front, so this elevates UAS as a dominant mechanism.
+- Added to `ENVIRONMENT_TRAUMA_FLAVOR` for Arctic and General (where reviewer's edit explicitly flipped "(none)" → drone attack).
+- Added to `SURGICAL_ETIOLOGIES` so the planner routes drone-injury cases into surgical buckets (DCR + DCS + PCC).
+- Added to `Conduct Mass Casualty Operations` MET boost tags.
+
+*DNBI broadening* (per reviewer note "use a variety of severities"):
+- `DNBI_BY_ENVIRONMENT` — added 2-3 entries per environment spanning mild (T3/T4 candidates) through severe (T1 candidates). Examples: Jungle gains "Severe falciparum malaria with cerebral involvement" + "Tropical pyomyositis"; Mountain gains "Severe HACE with herniation risk" + "Mild AMS responsive to descent"; General gains "Severe sepsis from urinary source" + "Diabetic ketoacidosis". Original entries preserved — additions append.
+- `DNBI_BY_REGION` — same treatment. CENTCOM gains "Severe sand fly fever" + "Brucellosis"; INDOPACOM gains "Severe scrub typhus with multiorgan failure"; AFRICOM gains "Severe falciparum malaria with cerebral involvement" + "Yellow fever (severe)". Total entries roughly doubled per region.
+
+*Canonical METs:*
+- `MET_BIAS` replaced. Old illustrative entries ("Conduct Damage Control Surgery" / "Manage MASCAL" / etc.) removed; new keys match the **Tier 1 Battalion Core METL from NAVMC 3500.84A Ch.2 ¶2000** as supplied by the reviewer:
+  - Provide Task-Organized Forces (MCT 1.1.2)
+  - Support Amphibious Operations (MCT 1.12.2)
+  - Conduct Casualty Treatment (MCT 4.5.3)
+  - Conduct Temporary Casualty Holding (MCT 4.5.4)
+  - Conduct Casualty Evacuation (MCT 4.5.5)
+  - Conduct Mass Casualty Operations (MCT 4.5.6)
+  - Conduct and Provide Dental Services (MCT 4.5.7)
+  - Conduct Medical Regulating Services (MCT 4.5.8)
+- Aligned with the frontend's existing `MET_DATA` in `src/app/page.tsx` (which already used these names from the same NAVMC). Frontend gains "Support Amphibious Operations" support automatically.
+- Tier 2 (collective HSS-OPS-* / HSS-PLAN-* / HSS-SVCS-*) and Tier 3 (individual HSS-MED-* / 8404-HSS-* / CLIN-HSS-*) events are documented in `docs/FOR_REVIEW_matrices_and_mets.md` §16 for reference but not yet wired into the planner — those are individual / collective training events rather than scenario-driving METs at the battalion level.
+
+*Test updates:*
+- `test_desert_adds_rollover_flavor`: converted to a 20-seed sweep (mirrors `test_centcom_adds_leishmaniasis_pool`). Adding `Fragmentation Drones` at the front of every setting pool makes single-seed sampling unreliable for catching the environment flavor.
+- `test_met_emphasis_recorded`: now references "Conduct Casualty Treatment" (in the new MET_BIAS) instead of the removed "Conduct Damage Control Surgery".
+
+**Tests:** 142/142 passing in 6.2s, no deprecation warnings.
+
+**FOR_REVIEW doc:** marked `✅ Applied 29APR2026 (BSF)` at the top so the file's status is clear at a glance. Doc retained for traceability.
+
+**Carry-forwards:**
+- Bedrock provider, Phase 7 tablet runner, frontend test harness — unchanged from prior entry.
+- Tier 2 / Tier 3 METs from NAVMC 3500.84A are documented but not wired. If the UI ever exposes them as MET checkboxes, `MET_BIAS` can grow accordingly.
+
+---
+
 ## 2026-04-29 (continued) — DB late-init refactor + 16 deferred integration tests
 
 **Branch:** `claude/review-schedule-issues-pjHcI`
