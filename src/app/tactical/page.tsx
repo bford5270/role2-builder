@@ -52,6 +52,10 @@ const MASCAL_ETIOLOGIES = [
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
 const POLL_INTERVAL_MS = 2500;
+// Tolerate transient network blips (Railway 502s, brief network drops). Only
+// terminal-fail after this many consecutive failed polls — at the default
+// interval that's ~12.5 seconds of failure before we surface an error.
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 
 type JobStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';
 
@@ -94,12 +98,14 @@ export default function TacticalScenarioPage() {
   const [progress, setProgress] = useState<string>('');
   const [job, setJob] = useState<JobStatusBody | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollFailures = useRef(0);
 
   const stopPolling = () => {
     if (pollTimer.current) {
       clearInterval(pollTimer.current);
       pollTimer.current = null;
     }
+    pollFailures.current = 0;
   };
 
   // Cleanup on unmount.
@@ -174,6 +180,7 @@ export default function TacticalScenarioPage() {
         throw new Error(`Status check failed (${r.status})`);
       }
       const body: JobStatusBody = await r.json();
+      pollFailures.current = 0;  // any successful poll resets the streak
       setJob(body);
 
       if (body.status === 'complete') {
@@ -193,9 +200,16 @@ export default function TacticalScenarioPage() {
         setGenerating(false);
       }
     } catch (err) {
-      stopPolling();
-      setError(err instanceof Error ? err.message : 'Polling failed');
-      setGenerating(false);
+      // Tolerate transient blips. Only terminal-fail after consecutive
+      // failures cross the threshold.
+      pollFailures.current += 1;
+      if (pollFailures.current >= MAX_CONSECUTIVE_POLL_FAILURES) {
+        stopPolling();
+        const msg = err instanceof Error ? err.message : 'Polling failed';
+        setError(`${msg} (after ${pollFailures.current} consecutive failures)`);
+        setGenerating(false);
+      }
+      // Otherwise: silently absorb. The next interval tick will retry.
     }
   };
 
@@ -238,7 +252,8 @@ export default function TacticalScenarioPage() {
       });
       setProgress('');
 
-      // Kick off polling.
+      // Kick off polling. stopPolling() also resets the failure counter so a
+      // retry after an earlier terminal failure starts fresh.
       stopPolling();
       pollJob(jobId, config.exercise_name);
       pollTimer.current = setInterval(() => pollJob(jobId, config.exercise_name), POLL_INTERVAL_MS);

@@ -113,6 +113,28 @@ class _FlakyProvider(CaseProvider):
         raise RuntimeError("simulated batch failure")
 
 
+class _StallingProvider(CaseProvider):
+    """Always raises asyncio.TimeoutError to simulate a stalled upstream call.
+
+    Verifies the retry-and-fallback path treats TimeoutError like any other
+    exception — without it, a single hung Gemini call would deadlock the
+    worker (see Apr 2026 freeze report). This provider is the regression
+    guard: if the retry layer silently swallows TimeoutError or fails to
+    fall through to fallback_factory, generate_all_cases would never return.
+    """
+
+    name = "stalling"
+
+    async def generate_case(self, **kwargs):
+        raise asyncio.TimeoutError("simulated stall")
+
+    async def generate_text(self, prompt, *, system=None):
+        raise asyncio.TimeoutError("simulated stall")
+
+    async def generate_batch(self, items):
+        raise asyncio.TimeoutError("simulated stall")
+
+
 class _BrokenProvider(CaseProvider):
     """Fails everything. Forces use of fallback_factory."""
 
@@ -174,6 +196,28 @@ class TestRetryAndFallback:
         assert result.total_returned == 0
         assert result.total_fallback == 0
         assert len(result.errors) == 14
+
+    def test_timeout_routes_to_fallback_without_hanging(self):
+        """Regression for the Apr 2026 freeze report. When the provider stalls
+        and surfaces TimeoutError (via the wait_for the Gemini provider now
+        adds), the retry layer must catch it like any other exception and
+        fall through to fallback_factory. If TimeoutError were swallowed or
+        propagated past the retry layer, generate_all_cases would deadlock."""
+        plans = _two_day_plans()
+        # Give it a short overall time budget to confirm it returns promptly.
+        result = asyncio.run(asyncio.wait_for(
+            generate_all_cases(
+                plans, _StallingProvider(),
+                environment="Desert", region="CENTCOM",
+                bucket_to_case_inputs=_bucket_to_inputs,
+                fallback_factory=_fallback,
+                batch_size=4, concurrency=2, initial_backoff=0.0,
+            ),
+            timeout=5.0,
+        ))
+        assert result.total_fallback == 14
+        assert len(result.errors) == 14
+        assert all("simulated stall" in e.error.lower() for e in result.errors)
 
 
 # ---------------------------------------------------------------------------

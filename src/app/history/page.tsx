@@ -21,11 +21,21 @@ export default function HistoricExercisesPage() {
 
   useEffect(() => {
     fetchExercises();
+    // Refetch when the browser tab regains focus — common scenario is
+    // generating an exercise in another tab and switching back here.
+    const onFocus = () => fetchExercises();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 
   const fetchExercises = async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const response = await fetch(`${API_BASE}/exercises`);
+      // Cache-bust against any stale CDN / browser layer; the list MUST
+      // reflect what's actually in the DB right now (the "needs two
+      // refreshes to see new entries" report traced back to this).
+      const response = await fetch(`${API_BASE}/exercises`, { cache: 'no-store' });
       if (!response.ok) throw new Error('Failed to fetch exercises');
       const data = await response.json();
       setExercises(data.exercises);
@@ -112,7 +122,17 @@ export default function HistoricExercisesPage() {
             <h1 className="text-2xl font-bold text-amber-400">Historic Exercises</h1>
             <p className="text-stone-400">View and download past exercise packages</p>
           </div>
-          <a href="/" className="text-amber-400 hover:text-amber-300 text-sm">← New Exercise</a>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={fetchExercises}
+              disabled={loading}
+              className="text-sm px-3 py-1.5 rounded border border-stone-500 text-stone-200 hover:bg-stone-700 disabled:opacity-50"
+              title="Reload list from server"
+            >
+              {loading ? 'Loading…' : 'Refresh'}
+            </button>
+            <a href="/" className="text-amber-400 hover:text-amber-300 text-sm">← New Exercise</a>
+          </div>
         </div>
 
         {loading && (

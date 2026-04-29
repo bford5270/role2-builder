@@ -380,16 +380,60 @@ async def health():
             )
     return {"status": "healthy", "db": db_state}
 
+# Themes seed the prompt with regionally-appropriate motifs so the LLM doesn't
+# converge on the same handful of generic names (Crimson Tide, Iron Fist...).
+# Heavily inspired by — but distinct from — actual historical USMC operation
+# naming conventions.
+_REGION_NAME_THEMES: Dict[str, List[str]] = {
+    "CENTCOM":   ["mythological figures from Mesopotamia/Persia", "celestial bodies", "raptors and predatory birds", "desert geography"],
+    "INDOPACOM": ["Pacific maritime weather phenomena", "Polynesian / East Asian mythology", "predatory marine animals", "volcanic geography"],
+    "EUCOM":     ["Norse / Greek mythology", "metals and minerals", "cold-weather predators", "Atlantic storms"],
+    "AFRICOM":   ["savanna / sub-Saharan wildlife", "ancient African kingdoms", "celestial bodies", "river systems"],
+    "SOUTHCOM":  ["Andean / Mesoamerican mythology", "tropical wildlife", "rainforest geography", "tactical archery"],
+    "NORTHCOM":  ["North American wildlife", "tribal nations / Indigenous heritage", "Rocky Mountain geography", "weather phenomena"],
+}
+_OVERUSED_NAMES = ["Crimson", "Steel", "Iron", "Thunder", "Eagle", "Tide", "Fist", "Storm", "Strike"]
+
+
 @app.post("/generate-name", tags=["generation"], summary="Suggest a USMC-style operation name")
 async def generate_name_endpoint(data: dict):
     env = data.get("environment", "General")
     region = data.get("region", "")
     threat = data.get("threatLevel", "")
     unit = data.get("supportedUnit", "Medical")
-    
-    prompt = f"Generate one USMC exercise name for {unit} in {env}, {region}, {threat}. Two tactical words. Format: 'Operation [Word] [Word]'. Avoid: Crimson, Steel, Iron, Thunder, Eagle. Return ONLY the name. Seed: {random.random()}"
+
+    themes = _REGION_NAME_THEMES.get(region, [
+        "mythological figures", "celestial bodies", "predatory animals", "geographic features",
+    ])
+    # Pick two themes deterministically per call, favoring variety. Caller's
+    # random seed in the prompt nudges the LLM away from converging.
+    theme_a, theme_b = random.sample(themes, k=min(2, len(themes)))
+    seed = random.random()
+
+    prompt = (
+        f"Generate ONE plausible USMC training-exercise name for the {unit} operating in "
+        f"{env} terrain, {region or 'unspecified theater'}, threat level {threat or 'unspecified'}.\n\n"
+        f"Format: 'Operation [Word One] [Word Two]'\n"
+        f"- Two evocative words. The first is usually an adjective or modifier; the second "
+        f"is usually a noun. Both should be a single word.\n"
+        f"- Word One could draw from: {theme_a}.\n"
+        f"- Word Two could draw from: {theme_b}.\n"
+        f"- Names should sound serious, professional, and operationally credible — "
+        f"NOT humorous or cartoonish.\n"
+        f"- Avoid these overused words entirely: {', '.join(_OVERUSED_NAMES)}.\n"
+        f"- Avoid words ending in 'er' (Hunter, Striker, Avenger).\n"
+        f"- The two words MUST NOT alliterate (no Silent Sentinel, Vigilant Viper).\n\n"
+        f"Examples of the *kind* of name we want (do not copy these):\n"
+        f"  Operation Pale Horseman\n"
+        f"  Operation Obsidian Reach\n"
+        f"  Operation Northwind Sentinel\n\n"
+        f"Return ONLY the operation name, nothing else. No quotes, no explanation.\n"
+        f"Variation seed: {seed:.6f}"
+    )
     text = await get_case_provider().generate_text(prompt)
-    name = text.strip().replace('"', '').replace("'", "")
+    name = text.strip().splitlines()[0].strip().strip('"\'').strip()
+    # Strip any trailing punctuation the model occasionally adds.
+    name = name.rstrip(".!,;:")
     if not name.startswith("Operation"):
         name = f"Operation {name}"
     return {"name": name}

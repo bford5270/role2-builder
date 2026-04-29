@@ -18,6 +18,40 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Field-report fixes: freeze, refresh, name generation
+
+**Branch:** `claude/review-schedule-issues-pjHcI` (PR #1)
+**Status going in:** BSF reviewer edits applied. User ran a 6-day / 56-casualty exercise and reported: (1) the run **froze**, (2) the `/history` list needs **two refreshes** to show new entries, (3) AI name generation is repetitive.
+
+**Root causes (all three):**
+
+1. **Freeze:** `gemini.py` wraps `client.models.generate_content` in `asyncio.to_thread(...)` with **no timeout**. If Gemini stalls — known to happen on free tier under load — the thread hangs forever; the retry layer in `case_generator._run_batch_with_retry` never fires (the call doesn't throw, it just doesn't return); the batch coroutine permanently holds its semaphore slot; the worker's `asyncio.gather(*batches)` waits indefinitely; the job sits in `running` forever. With ~12 batches at concurrency=3 across 56 cases, hitting one stalled call in 3+ minutes of work is statistically likely.
+
+   *Compounding factor:* the frontend's `pollJob` calls `stopPolling()` permanently on **any** failed poll. One transient Railway 502 in a 3-minute polling window kills the UI even when the backend recovered.
+
+2. **Refresh-twice:** `/history` only fetches on `useEffect(..., [])` mount. Browser/CDN caching of `GET /exercises` made the second fetch the one that saw new data.
+
+3. **Name generation:** prompt was a single line — "two tactical words, avoid Crimson/Steel/Iron/Thunder/Eagle, format Operation X Y, seed N". Model converged on the same handful of fillers.
+
+**Done this session:**
+
+*Backend:*
+- `backend/providers/gemini.py`: every Gemini call (`generate_case`, `generate_text`, `generate_batch`) now wrapped in `asyncio.wait_for(asyncio.to_thread(...), timeout=_REQUEST_TIMEOUT_S)`. Default 60s, tunable via `GEMINI_REQUEST_TIMEOUT_S` env var. A stall now surfaces as `TimeoutError`, which the existing retry layer catches like any other exception and eventually rolls into a fallback case. The deadlock scenario is no longer reachable.
+- `backend/main.py` `/generate-name`: rewritten with region-keyed theme dictionary (`_REGION_NAME_THEMES`) — Norse/Greek mythology for EUCOM, Mesoamerican mythology for SOUTHCOM, Pacific maritime weather for INDOPACOM, etc. Two themes sampled per call, fed into a multi-line prompt with examples ("Operation Pale Horseman", "Operation Obsidian Reach", "Operation Northwind Sentinel" — illustrative, not copied). Anti-patterns blocked: words ending in `-er`, alliteration, the previous overused list, plus an "operationally credible, not cartoonish" instruction.
+
+*Frontend:*
+- `tactical/page.tsx` `pollJob`: tracks `pollFailures.current` and only terminal-fails after `MAX_CONSECUTIVE_POLL_FAILURES = 5` (~12.5s of continuous failure at the 2.5s interval). Successful polls reset the counter. Transient blips are silently absorbed.
+- `history/page.tsx`: added a **Refresh** button next to the page title. Added a `window.addEventListener('focus', fetchExercises)` so coming back to the tab after generating elsewhere triggers a refetch. Added `cache: 'no-store'` to defeat browser/CDN caching of `GET /exercises`.
+
+*Tests:*
+- New `_StallingProvider` in `test_case_generator.py` raises `asyncio.TimeoutError` from every method (mirroring what `wait_for` produces against the real Gemini provider when it stalls).
+- `test_timeout_routes_to_fallback_without_hanging` wraps `generate_all_cases` itself in `asyncio.wait_for(timeout=5.0)` — if the regression returns and TimeoutError causes a deadlock again, the test fails fast. Asserts all cases fall back, errors carry the timeout message.
+- 143/143 passing under `-W error::DeprecationWarning`.
+
+**Operational note for the user's next 6-day run:** if Railway logs show repeated `wait_for` timeouts during the run, the upstream issue is Gemini, not this code — bumping `GEMINI_REQUEST_TIMEOUT_S` to 120 might help, or switching to a paid Gemini tier / Bedrock once GovCloud is live.
+
+---
+
 ## 2026-04-29 — Reviewer pass: BSF edits applied to matrices.py
 
 **Branch:** `claude/review-schedule-issues-pjHcI` (PR #1)

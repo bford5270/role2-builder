@@ -18,6 +18,14 @@ from .base import BatchItem, CaseProvider, inject_stable_ids
 
 _MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
+# Per-request timeout. The Gemini SDK's HTTP layer has its own timeout, but
+# it has been observed to stall silently on intermittent service issues —
+# leaving the to_thread call hanging forever, which would in turn deadlock
+# the worker's asyncio.gather across batches. asyncio.wait_for guarantees a
+# stalled call surfaces as TimeoutError, which the retry layer catches and
+# eventually rolls into a fallback case.
+_REQUEST_TIMEOUT_S = float(os.getenv("GEMINI_REQUEST_TIMEOUT_S", "60"))
+
 
 class GeminiCaseProvider(CaseProvider):
     name = "gemini"
@@ -43,14 +51,17 @@ class GeminiCaseProvider(CaseProvider):
             phases=phases,
             target_triage=target_triage,
         )
-        response = await asyncio.to_thread(
-            self._client.models.generate_content,
-            model=_MODEL,
-            contents=prompt,
-            config={
-                "system_instruction": CASE_SYSTEM_PROMPT,
-                "response_mime_type": "application/json",
-            },
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                self._client.models.generate_content,
+                model=_MODEL,
+                contents=prompt,
+                config={
+                    "system_instruction": CASE_SYSTEM_PROMPT,
+                    "response_mime_type": "application/json",
+                },
+            ),
+            timeout=_REQUEST_TIMEOUT_S,
         )
         case = _parse_json(response.text)
         if target_triage:
@@ -59,11 +70,14 @@ class GeminiCaseProvider(CaseProvider):
 
     async def generate_text(self, prompt: str, *, system: Optional[str] = None) -> str:
         config = {"system_instruction": system} if system else None
-        response = await asyncio.to_thread(
-            self._client.models.generate_content,
-            model=_MODEL,
-            contents=prompt,
-            config=config,
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                self._client.models.generate_content,
+                model=_MODEL,
+                contents=prompt,
+                config=config,
+            ),
+            timeout=_REQUEST_TIMEOUT_S,
         )
         return response.text
 
@@ -84,14 +98,17 @@ class GeminiCaseProvider(CaseProvider):
             )]
 
         prompt = case_batch_prompt(items)
-        response = await asyncio.to_thread(
-            self._client.models.generate_content,
-            model=_MODEL,
-            contents=prompt,
-            config={
-                "system_instruction": CASE_SYSTEM_PROMPT,
-                "response_mime_type": "application/json",
-            },
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                self._client.models.generate_content,
+                model=_MODEL,
+                contents=prompt,
+                config={
+                    "system_instruction": CASE_SYSTEM_PROMPT,
+                    "response_mime_type": "application/json",
+                },
+            ),
+            timeout=_REQUEST_TIMEOUT_S,
         )
         parsed = _parse_json(response.text)
         cases = parsed.get("cases") if isinstance(parsed, dict) else None
