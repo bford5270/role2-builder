@@ -29,7 +29,7 @@ Fraction of patients on a given day that are trauma (vs DNBI), before threat-lev
 | Defensive Operations   | 0.55         |
 | Retrograde Operations  | 0.60         |
 | Stability Operations   | 0.40         |
-| Humanitarian Assistance| 0.20         |
+| Humanitarian Assistance| 0.30         |
 
 Other related constants:
 - `DEFAULT_TRAUMA_RATIO` (fallback for unknown settings) = **0.50**
@@ -119,16 +119,16 @@ Mechanisms sampled (weighted toward the front) for trauma cases. MASCAL day over
 
 | Tactical setting        | Etiology pool (in order) |
 |-------------------------|--------------------------|
-| Frontal Attack          | GSW/Small Arms; Indirect Fire/Mortar; IED/Blast |
-| Amphibious Assault      | Drowning (Amphibious); GSW/Small Arms; IED/Blast; Vehicle Rollover |
-| Convoy Operations       | IED/Blast; Vehicle Rollover; GSW/Small Arms; VBIED |
-| Defensive Operations    | Indirect Fire/Mortar; GSW/Small Arms; IED/Blast |
-| Retrograde Operations   | IED/Blast; Vehicle Rollover; Indirect Fire/Mortar |
-| Stability Operations    | IED/Blast; GSW/Small Arms; VBIED |
-| Humanitarian Assistance | Vehicle Rollover; Structural Collapse; Burns/Fire |
+| Frontal Attack          | fragmentation drones; GSW/Small Arms; Indirect Fire/Mortar; IED/Blast |
+| Amphibious Assault      | fragmentation drones; Drowning (Amphibious); GSW/Small Arms; IED/Blast; Vehicle Rollover |
+| Convoy Operations       | fragmentation drones; IED/Blast; Vehicle Rollover; GSW/Small Arms; VBIED |
+| Defensive Operations    | fragmentation drones; Indirect Fire/Mortar; GSW/Small Arms; IED/Blast |
+| Retrograde Operations   | fragmentation drones; IED/Blast; Vehicle Rollover; Indirect Fire/Mortar |
+| Stability Operations    | fragmentation drones; IED/Blast; GSW/Small Arms; VBIED |
+| Humanitarian Assistance | fragmentation drones; Vehicle Rollover; Structural Collapse; Burns/Fire |
 
 **Reviewer notes:**
-_(write here)_
+try to amplify the presence and damage incurred by unammend aerial systems.  
 
 ---
 
@@ -140,12 +140,12 @@ Stacks on top of setting etiologies. Adds environmental flavor to mechanism choi
 |-------------|-------------------|
 | Desert      | Vehicle Rollover; Burns/Fire |
 | Jungle      | Structural Collapse; Drowning (Amphibious) |
-| Arctic      | _(none)_ |
+| Arctic      | drone attack |
 | Mountain    | Structural Collapse |
 | Maritime    | Drowning (Amphibious); Aviation Mishap |
 | Littoral    | Drowning (Amphibious) |
 | Urban       | Structural Collapse; VBIED |
-| General     | _(none)_ |
+| General     | drone attack |
 
 **Reviewer notes:**
 _(write here)_
@@ -166,7 +166,7 @@ _(write here)_
 | General   | Combat stress reaction; Dental emergency; Acute appendicitis; Kidney stones; Pneumonia; Gastroenteritis |
 
 **Reviewer notes:**
-_(write here)_
+broaden to other environment specific infectious diseases in a variety of severities.  
 
 ---
 
@@ -184,7 +184,7 @@ Stacks on top of environment DNBI.
 | NORTHCOM  | Seasonal influenza; Rocky Mountain spotted fever |
 
 **Reviewer notes:**
-_(write here)_
+as above, use a broad range of presnetation severities for these.  
 
 ---
 
@@ -280,9 +280,27 @@ The current `MET_BIAS` table below is **illustrative only**. Replace with the ca
 ### Canonical MET list (PLEASE FILL)
 
 ```
-- MET 1: ____________________
-- MET 2: ____________________
-- MET 3: ____________________
+Tier 1 — Medical Battalion Core METL (Ch. 2, ¶2000)
+MCT #Mission Essential TaskMCT 1.1.2Provide Task-Organized ForcesMCT 1.12.2Support Amphibious OperationsMCT 4.5.3Conduct Casualty TreatmentMCT 4.5.4Conduct Temporary Casualty HoldingMCT 4.5.5Conduct Casualty EvacuationMCT 4.5.8Conduct Medical Regulating
+Tier 2 — Medical Collective Events (Ch. 3, ¶3003)
+All E-coded. Sustainment intervals shown.
+7000-level (Battalion)
+CodeEventSupportsSustainHSS-OPS-7001Conduct COC functions1.1.2, 1.12.2, 4.5.4, 4.5.5, 4.5.812 moHSS-OPS-7002Conduct planning for DSCA1.1.2, 4.5.3, 4.5.4, 4.5.5, 4.5.812 moHSS-PLAN-7001Conduct planning1.1.2, 1.12.2, 4.5.56 mo
+6000-level (Company — Surgical Co)
+CodeEventSupportsSustainHSS-OPS-6001Conduct COC functions1.1.2, 1.12.2, 4.5.4, 4.5.5, 4.5.86 moHSS-OPS-6002Provide Role 2 command and control1.1.2, 1.12.26 moHSS-PLAN-6001Plan for operations1.1.2, 1.12.2, 4.5.56 moHSS-SVCS-6001Establish Role 2 HSS capability1.1.2, 1.12.2, 4.5.3, 4.5.4, 4.5.5, 4.5.86 mo
+5000-level (Platoon — FRSS/STP)
+CodeEventSupportsSustainHSS-OPS-5001Conduct COC functions1.1.2, 1.12.2, 4.5.4, 4.5.5, 4.5.86 moHSS-SVCS-5001Establish Role 2 HSS capability1.1.2, 1.12.2, 4.5.3, 4.5.4, 4.5.86 mo
+4000-level (Squad/Section)
+CodeEventSupportsSustainHSS-SVCS-4001Provide Role 2 HSS capabilities1.1.2, 1.12.2, 4.5.3, 4.5.4, 4.5.5, 4.5.86 moHSS-SVCS-4002Establish a Role 1 facility1.1.2, 1.12.2, 4.5.3, 4.5.4, 4.5.5, 4.5.86 moHSS-SVCS-4003Establish aid station1.1.2, 1.12.2, 4.5.3, 4.5.4, 4.5.5, 4.5.812 moHSS-SVCS-4004Provide damage control resuscitation1.1.2, 1.12.2, 4.5.3, 4.5.4, 4.5.5, 4.5.812 moHSS-SVCS-4005Coordinate patient movement4.5.3, 4.5.5, 4.5.86 mo
+3000-level (Crew/Team)
+CodeEventSupportsSustainHSS-SVCS-3001Receive casualties4.5.3, 4.5.4, 4.5.5, 4.5.86 moHSS-SVCS-3002Manage a mass casualty4.5.3, 4.5.5, 4.5.86 moHSS-SVCS-3003Conduct casualty holding4.5.3, 4.5.4, 4.5.5, 4.5.86 moHSS-SVCS-3004Conduct casualty evacuation4.5.5, 4.5.86 mo
+Tier 3 — Individual Events / PECLs
+Medical Common Skills (Ch. 5) — all FMF Sailors
+CodeEventHSS-MED-1001Conduct an inventoryHSS-MED-2001Provide first responder medical supportHSS-MED-2002Perform Tactical Combat Casualty CareHSS-MED-2003Conduct triageHSS-MED-2004Treat environmental injuriesHSS-MED-2005Manage mass casualty incidentHSS-MED-2006Identify diseases of operational importanceHSS-MED-2007Evacuate casualtiesHSS-MED-2008Perform En-Route Care (ERC)HSS-MED-2009Identify components of a Health Services Support PlanHSS-MED-2010Manage HSS for military operationsHSS-MED-2011Manage field medical services training programHSS-MED-2012Manage Combat and Operational StressHSS-MED-2013Provide advanced COSC OSCAR Extender servicesHSS-MED-2014Conduct field food service sanitationHSS-MED-2015Perform field preventive medicineHSS-MED-2101Perform general and HSS administrative tasksHSS-MED-2102Deploy Class VIII health services suppliesHSS-MED-2103Conduct trainingHSS-MED-2104Conduct sustainment training
+NEC 8404 Events (Ch. 6) — FMSS Corpsmen
+CodeEvent8404-HSS-2001Perform disease non-battle injury patient care8404-HSS-2002Evaluate traumatic brain injuries8404-HSS-2003Manage dehydration casualties8404-HSS-2004Maintain health services records8404-HSS-2101Perform dental care
+Clinical Events (Ch. 7) — Officers / IDCs / Providers
+CodeEventCLIN-HSS-2101Manage traumatic brain injuries (TBI)CLIN-HSS-2102Conduct concussion/TBI trainingCLIN-HSS-2103Manage field preventive medicineCLIN-HSS-2104Perform medical care
 ...
 ```
 
@@ -357,5 +375,5 @@ When you're done editing this file:
 - [ ] Section 16 canonical MET list filled in.
 - [ ] Tell Claude — Claude will translate edits into changes to `backend/matrices.py` and `backend/preset_data/*.json`, run the test suite, and commit.
 
-_Reviewer:_ ____________________
-_Date:_ ____________________
+_Reviewer:_ _BSF_
+_Date:_ ____29APR2026________________
