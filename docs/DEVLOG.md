@@ -18,6 +18,48 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Real BedrockCaseProvider + provider comparison harness
+
+**Branch:** `claude/review-schedule-issues-pjHcI` (PR #1)
+**Status going in:** field-report fixes shipped (`91982d1`); user asked whether to switch off Gemini and how to do it.
+
+**Done this session:**
+
+- `backend/providers/bedrock.py`: replaced the stub with a real implementation using `boto3` + the **Bedrock Converse API**.
+  - Same prompts as Gemini (CASE_SYSTEM_PROMPT + case_user_prompt + case_batch_prompt).
+  - Same `inject_stable_ids` post-process.
+  - Same `asyncio.wait_for(...)` freeze-protection pattern around the blocking boto3 call (`BEDROCK_REQUEST_TIMEOUT_S`, default 60s).
+  - Configurable via env: `AWS_REGION`, `BEDROCK_MODEL_ID` (required, raises with a helpful message if unset), `BEDROCK_MAX_OUTPUT_TOKENS`, `BEDROCK_TEMPERATURE`.
+  - Soft import of `boto3` so installs without it don't break unrelated code.
+  - Constructor accepts an injected `client` for tests.
+- `requirements.txt`: added `boto3==1.35.49`.
+- `.env.example`: documents every Bedrock env var (region, model id, timeout, token cap, temperature) with inline guidance on cross-region inference profiles.
+- `backend/tests/test_bedrock_provider.py` (new, 13 tests):
+  - Init-time validation (`BEDROCK_MODEL_ID` required).
+  - Single-case happy path (parsed, stable IDs injected, target_triage forced).
+  - Batch happy path (one converse call returns N cases).
+  - Single-item batch falls through to single path.
+  - Empty batch returns empty.
+  - Size-mismatch raises ValueError (caught by the retry layer upstream).
+  - Prose-framed JSON parsing (Claude sometimes wraps JSON in commentary).
+  - Stalled call surfaces TimeoutError (regression guard mirroring the Gemini fix).
+  - generate_text passes / omits system prompt correctly.
+  - Malformed Converse response shape raises a clear error.
+  - All run with a `_FakeBedrockClient` — no real AWS calls.
+- `backend/scripts/compare_providers.py` (new): standalone CLI that runs the same canonical 5-case BatchItem set through every requested provider, captures both single-case and batch path outputs, and writes a side-by-side `comparison.md` plus per-provider raw JSON. Metrics: schema completeness fraction, mean / max latency, output verbosity. Smoke-tested against the stub provider locally; runs end-to-end against gemini + bedrock once env vars are set.
+  - Usage: `python -m backend.scripts.compare_providers --providers gemini bedrock`
+- `README.md`: new "Switching to Bedrock" section with the AWS account prep / IAM / env vars / smoke-test / production flip / GovCloud transition steps.
+
+**Tests:** 156/156 passing in ~6s, no deprecation warnings (was 143).
+
+**The path forward (per discussion):**
+1. Set up Bedrock model access in commercial AWS (`us-east-1`).
+2. Run `python -m backend.scripts.compare_providers --providers gemini bedrock` against a live account; eyeball the side-by-side cases.
+3. If Bedrock-Claude looks better (likely), flip `CASE_PROVIDER=bedrock` on Railway. Zero code change to roll back.
+4. When GovCloud onboarding starts, change `AWS_REGION` + repin `BEDROCK_MODEL_ID` + update IAM. No application code change.
+
+---
+
 ## 2026-04-29 (continued) — Field-report fixes: freeze, refresh, name generation
 
 **Branch:** `claude/review-schedule-issues-pjHcI` (PR #1)

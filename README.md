@@ -88,7 +88,7 @@ All env vars live in [.env.example](./.env.example) with inline guidance. The hi
 ## Tests
 
 ```bash
-pytest                        # 142 tests, ~5s
+pytest                        # 156 tests, ~6s
 pytest -W error::DeprecationWarning   # CI mode — clean
 ```
 
@@ -155,8 +155,51 @@ docs/
 ## Known gaps / pending work
 
 - `docs/FOR_REVIEW_matrices_and_mets.md` is awaiting SME / user sign-off on the default casualty matrices, the preset bundles, and the canonical MET list.
-- `BedrockCaseProvider` is a stub. Implementation deferred until GovCloud onboarding (untested provider code is worse than no provider code).
+- `BedrockCaseProvider` is implemented (Converse API via boto3) but **untested against real AWS in this repo's CI** — has unit tests with a mocked client. First production use requires a smoke test against your account (see "Switching to Bedrock" below).
 - No frontend tests (no Playwright / Vitest setup yet).
+
+## Switching to Bedrock
+
+The `CaseProvider` ABC is the only thing main.py talks to, so switching is an env-var change. Steps:
+
+1. **AWS account prep**
+   - Open the [Bedrock console](https://console.aws.amazon.com/bedrock/) in your target region (`us-east-1` for commercial, `us-gov-west-1` for GovCloud).
+   - **Model access** → request access to the Anthropic Claude models you want. Approval is usually instant for commercial, may require justification for GovCloud.
+   - Note the exact model id from the console — it varies per region. The cross-region inference profile id (prefix `us.`) is more reliable than direct model ids.
+
+2. **IAM**
+   - Grant the calling principal (your Railway service env, your laptop role, your ECS task role, etc.) `bedrock:InvokeModel` on the resolved model arn.
+   - For the Anthropic Claude inference profile, the resource arn looks like:
+     `arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0`
+     and `arn:aws:bedrock:us-east-1:<account>:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0`.
+
+3. **Environment variables** (see `.env.example` for the full list)
+   ```
+   CASE_PROVIDER=bedrock
+   AWS_REGION=us-east-1
+   BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+   AWS_ACCESS_KEY_ID=...      # or use instance role
+   AWS_SECRET_ACCESS_KEY=...
+   ```
+
+4. **Smoke test before flipping production**
+   ```bash
+   # Side-by-side comparison vs Gemini, real calls to both
+   python -m backend.scripts.compare_providers --providers gemini bedrock
+   ```
+   Outputs go to `out/compare_<timestamp>/`. The `comparison.md` table shows
+   schema completeness, latency, and output verbosity per provider; raw JSON
+   in `<provider>/case_*.json` lets you eyeball case quality.
+
+5. **Flip the default**
+   - Set `CASE_PROVIDER=bedrock` on the production server. No code changes required.
+   - Roll back by un-setting (defaults to `gemini`) or setting back to `gemini`.
+
+6. **GovCloud transition (later)**
+   - Change `AWS_REGION=us-gov-west-1`.
+   - Re-pin `BEDROCK_MODEL_ID` from the GovCloud Bedrock console (the available models / ids may differ).
+   - Update the IAM grant on the GovCloud principal.
+   - Zero application code changes.
 - No auth. `/settings/matrices` is currently editable by anyone with network access — fine for the current deployment, lock down when auth lands.
 
 See [docs/DEVLOG.md](./docs/DEVLOG.md) for the full session-by-session history of what was built, why, and what was deferred.
