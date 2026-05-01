@@ -158,6 +158,33 @@ docs/
 - `BedrockCaseProvider` is implemented (Converse API via boto3) but **untested against real AWS in this repo's CI** — has unit tests with a mocked client. First production use requires a smoke test against your account (see "Switching to Bedrock" below).
 - No frontend tests (no Playwright / Vitest setup yet).
 
+## Deploying
+
+### Local docker run
+
+```bash
+docker build -t role2-builder .
+docker run --rm -p 8000:8000 \
+  -e CASE_PROVIDER=stub \
+  role2-builder
+```
+
+For production-ish settings, mount a `.env` file or pass through the same env vars listed in `.env.example`.
+
+### AWS App Runner / Fargate
+
+The included [Dockerfile](./Dockerfile) builds a slim multi-stage image (~400MB, non-root, tini-init). App Runner can build from the source repo directly; Fargate needs a push to ECR. IAM policy templates live in [`infra/iam/`](./infra/iam/).
+
+### Preflight before flipping providers
+
+Before changing `CASE_PROVIDER` in production, run the doctor locally with the same env vars you plan to use:
+
+```bash
+CASE_PROVIDER=bedrock python -m backend.scripts.doctor
+```
+
+It walks every prereq (boto3 importable, AWS creds resolvable, `AWS_REGION` + `BEDROCK_MODEL_ID` set, real Converse call) and prints a green/red checklist. Exits 1 on any failure — safe to wire into a deployment script.
+
 ## Switching to Bedrock
 
 The `CaseProvider` ABC is the only thing main.py talks to, so switching is an env-var change. Steps:

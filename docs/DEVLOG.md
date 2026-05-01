@@ -18,6 +18,57 @@ Format:
 
 ---
 
+## 2026-04-29 (continued) — Deployment scaffolding: Dockerfile, doctor CLI, IAM policies, GitHub Actions
+
+**Branch:** `claude/review-schedule-issues-pjHcI` (PR #1)
+**Status going in:** Bedrock provider implemented + comparison harness in place; user asked what could be done "through here and connectors" to make the AWS migration as turn-key as possible.
+
+**Honest scope note:** I have GitHub MCP access but no AWS / Railway / Vercel connector. So I can't deploy for the user; what I CAN do is land every code/config artifact they'll need so the manual steps shrink to copy-paste + `aws iam create-...` commands.
+
+**Done this session:**
+
+- **`Dockerfile`** + **`.dockerignore`** for the FastAPI backend.
+  - Multi-stage (builder venv → slim runtime), python:3.11-slim base.
+  - Non-root user (UID 10001), `tini` as PID 1 so SIGTERM triggers FastAPI graceful shutdown.
+  - Honors `${PORT}` from App Runner / Fargate; defaults to 8000 for local docker.
+  - Defaults `LOG_FORMAT=json` so CloudWatch parses correctly out of the box.
+  - `.dockerignore` excludes the frontend source tree, tests, scripts, docs, .venv — keeps the build context tight.
+
+- **`backend/scripts/doctor.py`** — preflight diagnostic CLI.
+  - Reads `CASE_PROVIDER` and runs the appropriate checklist.
+  - Bedrock checks: boto3 importable, AWS credentials resolvable (boto3 chain), `AWS_REGION` set, `BEDROCK_MODEL_ID` set, client constructible, and a real Converse call with a 1-token prompt.
+  - Pretty-prints pass/fail per check; exits 1 on any failure (safe to wire into deploy scripts).
+  - Specific actionable error messages for the common failure modes (AccessDeniedException → IAM, ValidationException → wrong model id / region, EndpointConnectionError → network).
+  - Smoke-tested locally against the stub provider.
+
+- **`infra/iam/*.json`** + **`infra/README.md`** — copy-pasteable IAM building blocks:
+  - `bedrock-invoke-policy.json` — minimum to call Claude on Bedrock (with placeholders for region/account/model id).
+  - `bedrock-readonly-policy.json` — optional list-models grants for diagnostic tooling.
+  - `apprunner-trust-policy.json` — App Runner instance role trust.
+  - `ecs-task-trust-policy.json` — ECS Fargate task role trust.
+  - `infra/README.md` walks through three application paths (IAM user / App Runner instance role / ECS task role) with the exact AWS CLI commands.
+
+- **`.github/workflows/tests.yml`** — CI on push to `main` / `claude/**` and on PRs to main.
+  - Runs `pytest -W error::DeprecationWarning` (provider stubbed, no external keys needed).
+  - Runs `tsc --noEmit` for frontend typecheck (avoids `next build` Google Fonts fetch).
+  - 10-min timeout on the Python job, 5-min on the typecheck job.
+
+- **README**: new "Deploying" section covering local docker, AWS App Runner / Fargate, and the preflight doctor command. The existing "Switching to Bedrock" section is now preceded by the doctor instructions.
+
+**Tests:** unchanged (156/156 passing — no test code touched).
+
+**What's left for the user (genuinely manual):**
+1. Open AWS Bedrock console → request Claude model access.
+2. Create an IAM user / role using `infra/iam/bedrock-invoke-policy.json` (replace placeholders).
+3. Set the env vars (locally for the doctor, then in Railway / App Runner for production).
+4. Run `python -m backend.scripts.doctor` — should be all green.
+5. Run `python -m backend.scripts.compare_providers --providers gemini bedrock` — eyeball the side-by-side output quality.
+6. Flip `CASE_PROVIDER=bedrock` in Railway. Roll back by deleting the var.
+
+If GitHub Actions is enabled on the repo, every push will now run the full test suite + frontend typecheck automatically.
+
+---
+
 ## 2026-04-29 (continued) — Real BedrockCaseProvider + provider comparison harness
 
 **Branch:** `claude/review-schedule-issues-pjHcI` (PR #1)
