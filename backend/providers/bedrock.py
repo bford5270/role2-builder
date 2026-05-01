@@ -86,12 +86,30 @@ class BedrockCaseProvider(CaseProvider):
             # Soft import so installs without boto3 don't break unrelated code.
             try:
                 import boto3
+                from botocore.config import Config
             except ImportError as e:  # pragma: no cover
                 raise RuntimeError(
                     "boto3 is required for the Bedrock provider. "
                     "pip install boto3, or set CASE_PROVIDER=gemini|stub."
                 ) from e
-            self._client = boto3.client("bedrock-runtime", region_name=self._region)
+            # Critical: boto3's default read_timeout is 60s, which is too tight
+            # for case-generation calls that stream ~60-120s of output. With the
+            # default config the call would hit boto3's HTTP read_timeout, boto3
+            # would silently retry (default retry policy = 5 attempts), and our
+            # asyncio.wait_for would fire before any retry completed — giving
+            # the symptom of a hard timeout at exactly our wait_for ceiling.
+            # We disable boto3's retry layer entirely (max_attempts=1) because
+            # the case_generator already retries at the application level.
+            client_config = Config(
+                read_timeout=_REQUEST_TIMEOUT_S + 30,  # generous buffer above wait_for
+                connect_timeout=10,
+                retries={"max_attempts": 1, "mode": "standard"},
+            )
+            self._client = boto3.client(
+                "bedrock-runtime",
+                region_name=self._region,
+                config=client_config,
+            )
 
     # ------------------------------------------------------------------
     # CaseProvider contract
