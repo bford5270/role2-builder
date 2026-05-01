@@ -195,6 +195,33 @@ class TestBedrockTimeout:
             asyncio.run(p.generate_text("hello"))
 
 
+class TestTruncationDetection:
+    """Bedrock signals mid-output truncation via stopReason='max_tokens'.
+    Without explicit detection, the truncated text falls through to
+    json.loads and produces a confusing JSONDecodeError; the regression in
+    Apr 2026 made this opaque. The provider now raises a clear ValueError."""
+
+    def test_max_tokens_stop_reason_raises_clear_error(self):
+        class _TruncatingClient:
+            def converse(self, **kwargs):
+                # Return a "truncated" partial JSON with stopReason=max_tokens.
+                return {
+                    "output": {"message": {"role": "assistant", "content": [{"text": "{\"meta\": {\"title\": \"truncat"}]}},
+                    "stopReason": "max_tokens",
+                    "usage": {"inputTokens": 100, "outputTokens": 5000, "totalTokens": 5100},
+                }
+        p = BedrockCaseProvider(model_id="test-model", client=_TruncatingClient())
+        with pytest.raises(ValueError, match="truncated output at maxTokens"):
+            asyncio.run(p.generate_text("hello"))
+
+    def test_end_turn_stop_reason_returns_text(self):
+        # Sanity: normal completion path still works.
+        client = _FakeBedrockClient(CANONICAL_CASE_JSON)
+        p = BedrockCaseProvider(model_id="test-model", client=client)
+        text = asyncio.run(p.generate_text("hello"))
+        assert "meta" in text  # got the canonical JSON back unchanged
+
+
 # ---------------------------------------------------------------------------
 # generate_text
 # ---------------------------------------------------------------------------

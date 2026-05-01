@@ -35,12 +35,14 @@ from .base import BatchItem, CaseProvider, inject_stable_ids
 
 
 _REQUEST_TIMEOUT_S = float(os.getenv("BEDROCK_REQUEST_TIMEOUT_S", "120"))
-# Token ceiling per case. A typical Role 2 case is ~2000-3000 output tokens
-# of JSON; we budget 3000 per case + a buffer. The actual maxTokens passed to
-# Bedrock scales with batch size in generate_batch (3000 * N + 500). Capping
-# per-case keeps Sonnet from running out the 120s wall clock with rambling
-# output. Bedrock-Claude bills on output tokens, so this is also a cost cap.
-_MAX_OUTPUT_TOKENS_PER_CASE = int(os.getenv("BEDROCK_MAX_OUTPUT_TOKENS_PER_CASE", "3000"))
+# Token ceiling per case. A typical Role 2 case from Sonnet 4.6 lands around
+# 3000-4500 output tokens of JSON; 5000 leaves headroom for the verbose end
+# of the distribution. Below 5000 we saw silent mid-JSON truncation in field
+# testing — Bedrock returns stopReason=max_tokens but our code used to blindly
+# json.loads the truncated text and report a confusing JSONDecodeError. The
+# truncation check in _converse below surfaces a clear error instead.
+# Bedrock-Claude bills on output tokens, so this is also a cost cap.
+_MAX_OUTPUT_TOKENS_PER_CASE = int(os.getenv("BEDROCK_MAX_OUTPUT_TOKENS_PER_CASE", "5000"))
 # Hard ceiling override. If set, no call will exceed this. Useful for cost
 # clamping in budget-sensitive deployments. Unset by default.
 _MAX_OUTPUT_TOKENS_HARD_CAP = int(os.getenv("BEDROCK_MAX_OUTPUT_TOKENS", "0")) or None
@@ -207,11 +209,26 @@ class BedrockCaseProvider(CaseProvider):
         #   {"output": {"message": {"role": "assistant",
         #                           "content": [{"text": "..."}]}}, ...}
         try:
-            return response["output"]["message"]["content"][0]["text"]
+            text = response["output"]["message"]["content"][0]["text"]
         except (KeyError, IndexError, TypeError) as e:
             raise ValueError(
                 f"unexpected Bedrock Converse response shape: {e}; got {response!r}"
             ) from e
+
+        # Surface mid-output truncation as a clear error instead of letting
+        # downstream json.loads fail with a confusing JSONDecodeError. Bedrock
+        # signals truncation via stopReason='max_tokens'; we know the output
+        # is incomplete and won't parse.
+        stop_reason = response.get("stopReason")
+        if stop_reason == "max_tokens":
+            usage = response.get("usage", {}) or {}
+            cap = kwargs["inferenceConfig"]["maxTokens"]
+            raise ValueError(
+                f"Bedrock truncated output at maxTokens={cap} "
+                f"(stopReason=max_tokens, output_tokens={usage.get('outputTokens')}). "
+                f"Increase BEDROCK_MAX_OUTPUT_TOKENS_PER_CASE."
+            )
+        return text
 
 
 # ---------------------------------------------------------------------------
