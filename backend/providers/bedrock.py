@@ -34,12 +34,30 @@ from ..prompts import CASE_SYSTEM_PROMPT, case_batch_prompt, case_user_prompt
 from .base import BatchItem, CaseProvider, inject_stable_ids
 
 
-_REQUEST_TIMEOUT_S = float(os.getenv("BEDROCK_REQUEST_TIMEOUT_S", "60"))
-# Token ceiling — enough for a multi-case batch JSON payload. Bedrock-Claude
-# bills on output tokens, so don't set this absurdly high.
-_MAX_OUTPUT_TOKENS = int(os.getenv("BEDROCK_MAX_OUTPUT_TOKENS", "8192"))
+_REQUEST_TIMEOUT_S = float(os.getenv("BEDROCK_REQUEST_TIMEOUT_S", "120"))
+# Token ceiling per case. A typical Role 2 case is ~2000-3000 output tokens
+# of JSON; we budget 3000 per case + a buffer. The actual maxTokens passed to
+# Bedrock scales with batch size in generate_batch (3000 * N + 500). Capping
+# per-case keeps Sonnet from running out the 120s wall clock with rambling
+# output. Bedrock-Claude bills on output tokens, so this is also a cost cap.
+_MAX_OUTPUT_TOKENS_PER_CASE = int(os.getenv("BEDROCK_MAX_OUTPUT_TOKENS_PER_CASE", "3000"))
+# Hard ceiling override. If set, no call will exceed this. Useful for cost
+# clamping in budget-sensitive deployments. Unset by default.
+_MAX_OUTPUT_TOKENS_HARD_CAP = int(os.getenv("BEDROCK_MAX_OUTPUT_TOKENS", "0")) or None
 # Generation temperature. Slightly creative for case variety.
 _TEMPERATURE = float(os.getenv("BEDROCK_TEMPERATURE", "0.7"))
+
+
+def _budget_max_tokens(num_cases: int) -> int:
+    """Compute maxTokens for a Bedrock call covering `num_cases` cases.
+
+    Per-case budget + a small buffer for the JSON wrapper. Honor the optional
+    hard cap if set. Single-case path passes num_cases=1.
+    """
+    estimated = _MAX_OUTPUT_TOKENS_PER_CASE * max(1, num_cases) + 500
+    if _MAX_OUTPUT_TOKENS_HARD_CAP is not None:
+        return min(estimated, _MAX_OUTPUT_TOKENS_HARD_CAP)
+    return estimated
 
 
 class BedrockCaseProvider(CaseProvider):
@@ -97,14 +115,14 @@ class BedrockCaseProvider(CaseProvider):
             phases=phases,
             target_triage=target_triage,
         )
-        text = await self._converse(prompt, system=CASE_SYSTEM_PROMPT)
+        text = await self._converse(prompt, system=CASE_SYSTEM_PROMPT, max_tokens=_budget_max_tokens(1))
         case = _parse_json(text)
         if target_triage:
             case["triage_category"] = target_triage
         return inject_stable_ids(case)
 
     async def generate_text(self, prompt: str, *, system: Optional[str] = None) -> str:
-        return await self._converse(prompt, system=system)
+        return await self._converse(prompt, system=system, max_tokens=_budget_max_tokens(1))
 
     async def generate_batch(self, items: List[BatchItem]) -> List[Dict[str, Any]]:
         if not items:
@@ -122,7 +140,11 @@ class BedrockCaseProvider(CaseProvider):
                 )
             ]
         prompt = case_batch_prompt(items)
-        text = await self._converse(prompt, system=CASE_SYSTEM_PROMPT)
+        text = await self._converse(
+            prompt,
+            system=CASE_SYSTEM_PROMPT,
+            max_tokens=_budget_max_tokens(len(items)),
+        )
         parsed = _parse_json(text)
         cases = parsed.get("cases") if isinstance(parsed, dict) else None
         if not isinstance(cases, list) or len(cases) != len(items):
@@ -141,12 +163,18 @@ class BedrockCaseProvider(CaseProvider):
     # Internal: single Converse call with timeout protection
     # ------------------------------------------------------------------
 
-    async def _converse(self, prompt: str, *, system: Optional[str] = None) -> str:
+    async def _converse(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
         kwargs: Dict[str, Any] = {
             "modelId": self._model_id,
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
             "inferenceConfig": {
-                "maxTokens": _MAX_OUTPUT_TOKENS,
+                "maxTokens": max_tokens or _budget_max_tokens(1),
                 "temperature": _TEMPERATURE,
             },
         }

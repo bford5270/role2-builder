@@ -9,14 +9,20 @@ CASE_SYSTEM_PROMPT = """You are an expert Military Medical Simulation Designer f
 Generate a detailed simulation case with:
 1. Z-MIST (Zap=EXACTLY 5 digits, Mechanism, Injuries, Signs, Treatment)
 2. 9-Line Medevac (NATO format)
-3. Clinical Phases (only include phases specified - some cases don't need surgery)
+3. Clinical Phases — only include phases specified; some cases bypass surgery entirely
 4. Vitals trends (3-4 timestamps per phase)
 5. Contingencies (If/Then decision points)
 6. Evacuation (transport type, considerations, handover notes)
 7. Learning Objectives (3-5 specific, measurable)
 8. Debrief Questions (4-6 thought-provoking)
 
-If DCS not needed, set dcs to null.
+ROLE 2 CLINICAL PATHWAY (the patient's physical movement through the facility):
+- SURGICAL case: STP arrival → DCR (Shock Trauma Platoon resuscitation) → DCS (FRSS damage control surgery) → PCC (Holding bay, post-operative recovery + evacuation prep).
+- NON-SURGICAL case: STP arrival → DCR → PCC (Holding bay, observation + ongoing resuscitation + evacuation prep). The patient bypasses the FRSS entirely; there is no surgery.
+
+For NON-SURGICAL cases, set "dcs" to null AND write the PCC narrative as holding-bay monitoring / ongoing care / evac prep — NOT post-operative recovery (there was no operation). The clinical story should make it clear the patient never needed the OR.
+
+Keep narratives focused — 2-4 sentences per phase, not paragraphs. Contingencies are 3-5 clinically meaningful If/Then decision points, not exhaustive enumerations. Vitals trends are 3-4 timestamps per phase capturing the actual physiology arc.
 
 JSON STRUCTURE:
 {
@@ -43,9 +49,12 @@ Do not invent IDs. The server will inject stable IDs after parsing your response
 def case_user_prompt(*, case_type: str, mechanism: str, environment: str, region: str, phases: list[str], target_triage: str | None = None) -> str:
     """User-facing prompt for a single case generation. Provider-agnostic."""
     if "DCS" in phases:
-        phase_instr = "This case requires surgery. Include DCR, DCS, and PCC."
+        phase_instr = "Surgical case. Patient flow: STP → DCR → DCS (FRSS) → PCC (Holding, post-op). Include all three phases."
     else:
-        phase_instr = "This case does NOT require surgery. Only DCR and PCC. Set dcs to null."
+        phase_instr = (
+            "Non-surgical case. Patient flow: STP → DCR → PCC (Holding, observation/evac prep). "
+            "Bypass the FRSS entirely; set dcs to null. The PCC narrative is holding-bay care, NOT post-operative recovery."
+        )
 
     triage_instr = (
         f"The patient should be triage category {target_triage}. Calibrate vitals, mechanism severity, "
@@ -72,9 +81,12 @@ def case_batch_prompt(items: list) -> str:
     blocks = []
     for i, item in enumerate(items, start=1):
         if "DCS" in item.phases:
-            phase_instr = "Surgery REQUIRED. Include DCR, DCS, PCC."
+            phase_instr = "Surgical. Path: STP → DCR → DCS (FRSS) → PCC."
         else:
-            phase_instr = "No surgery. DCR + PCC only. Set dcs to null."
+            phase_instr = (
+                "Non-surgical. Path: STP → DCR → PCC (Holding, NOT post-op). "
+                "Bypass FRSS, dcs=null."
+            )
         triage_instr = f"Triage category: {item.target_triage}." if item.target_triage else ""
         blocks.append(
             f"--- CASE {i} ---\n"
