@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 interface DayConfig {
   day_number: number;
@@ -51,6 +51,44 @@ const MASCAL_ETIOLOGIES = [
 ];
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
+const POLL_INTERVAL_MS = 2500;
+// Tolerate transient network blips (Railway 502s, brief network drops). Only
+// terminal-fail after this many consecutive failed polls — at the default
+// interval that's ~12.5 seconds of failure before we surface an error.
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
+type JobStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';
+
+interface JobStatusBody {
+  job_id: string;
+  status: JobStatus;
+  current_phase: string;
+  total_cases: number;
+  completed_cases: number;
+  progress: number;
+  errors_count: number;
+  exercise_id: number | null;
+  error_message: string | null;
+  generation_summary: {
+    total_requested: number;
+    total_returned: number;
+    total_fallback: number;
+    errors: unknown[];
+  } | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const PHASE_LABELS: Record<string, string> = {
+  queued: 'Queued — waiting for an open worker slot',
+  planning: 'Planning casualty mix',
+  generating_cases: 'Generating cases',
+  generating_docs: 'Generating WARNO / Annex Q / MEDROE',
+  packaging: 'Packaging exercise ZIP',
+  complete: 'Complete',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
 
 export default function TacticalScenarioPage() {
   const [config, setConfig] = useState<ExerciseConfig | null>(null);
@@ -58,6 +96,20 @@ export default function TacticalScenarioPage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string>('');
+  const [job, setJob] = useState<JobStatusBody | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollFailures = useRef(0);
+
+  const stopPolling = () => {
+    if (pollTimer.current) {
+      clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    }
+    pollFailures.current = 0;
+  };
+
+  // Cleanup on unmount.
+  useEffect(() => () => stopPolling(), []);
 
   useEffect(() => {
     const savedConfig = localStorage.getItem('exerciseConfig');
@@ -105,44 +157,124 @@ export default function TacticalScenarioPage() {
     }
   };
 
+  const downloadJobZip = async (jobId: string, exerciseName: string) => {
+    const response = await fetch(`${API_BASE}/jobs/${jobId}/download`);
+    if (!response.ok) {
+      throw new Error(`Download failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${exerciseName}_Package.zip`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  const pollJob = async (jobId: string, exerciseName: string) => {
+    try {
+      const r = await fetch(`${API_BASE}/jobs/${jobId}`);
+      if (!r.ok) {
+        throw new Error(`Status check failed (${r.status})`);
+      }
+      const body: JobStatusBody = await r.json();
+      pollFailures.current = 0;  // any successful poll resets the streak
+      setJob(body);
+
+      if (body.status === 'complete') {
+        stopPolling();
+        setProgress('Downloading package...');
+        await downloadJobZip(jobId, exerciseName);
+        setProgress('Complete. Check your downloads folder.');
+        setGenerating(false);
+      } else if (body.status === 'failed') {
+        stopPolling();
+        setError(body.error_message || 'Generation failed');
+        setProgress('');
+        setGenerating(false);
+      } else if (body.status === 'cancelled') {
+        stopPolling();
+        setProgress('Cancelled.');
+        setGenerating(false);
+      }
+    } catch (err) {
+      // Tolerate transient blips. Only terminal-fail after consecutive
+      // failures cross the threshold.
+      pollFailures.current += 1;
+      if (pollFailures.current >= MAX_CONSECUTIVE_POLL_FAILURES) {
+        stopPolling();
+        const msg = err instanceof Error ? err.message : 'Polling failed';
+        setError(`${msg} (after ${pollFailures.current} consecutive failures)`);
+        setGenerating(false);
+      }
+      // Otherwise: silently absorb. The next interval tick will retry.
+    }
+  };
+
   const handleGenerate = async () => {
     if (!config) return;
-    
+
     setGenerating(true);
     setError(null);
-    setProgress('Preparing exercise configuration...');
+    setJob(null);
+    setProgress('Submitting exercise configuration...');
 
     try {
       const fullConfig: ExerciseConfig = { ...config, days: days };
-      setProgress('Generating cases and documents... This may take 1-2 minutes.');
-
-      const response = await fetch(`${API_BASE}/generate-exercise`, {
+      const response = await fetch(`${API_BASE}/jobs/generate-exercise`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fullConfig)
+        body: JSON.stringify(fullConfig),
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Generation failed');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Submission failed');
       }
 
-      setProgress('Downloading package...');
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${config.exercise_name}_Package.zip`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      setProgress('Complete! Check your downloads folder.');
+      const queued = await response.json();
+      const jobId: string = queued.job_id;
+      setJob({
+        job_id: jobId,
+        status: queued.status,
+        current_phase: queued.current_phase,
+        total_cases: queued.total_cases,
+        completed_cases: 0,
+        progress: 0,
+        errors_count: 0,
+        exercise_id: null,
+        error_message: null,
+        generation_summary: null,
+        created_at: queued.created_at,
+        updated_at: queued.created_at,
+      });
+      setProgress('');
+
+      // Kick off polling. stopPolling() also resets the failure counter so a
+      // retry after an earlier terminal failure starts fresh.
+      stopPolling();
+      pollJob(jobId, config.exercise_name);
+      pollTimer.current = setInterval(() => pollJob(jobId, config.exercise_name), POLL_INTERVAL_MS);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       setProgress('');
-    } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!job) return;
+    try {
+      const r = await fetch(`${API_BASE}/jobs/${job.job_id}/cancel`, { method: 'POST' });
+      if (!r.ok && r.status !== 409) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.detail || 'Cancel failed');
+      }
+      // Polling will pick up the new status.
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cancel failed');
     }
   };
 
@@ -262,12 +394,55 @@ export default function TacticalScenarioPage() {
 
         {error && <div className="bg-red-900/50 border border-red-700 rounded-lg p-4 mb-6"><p className="text-red-300">{error}</p></div>}
 
-        {progress && (
+        {(job || progress) && (
           <div className="bg-stone-800 border border-amber-700 rounded-lg p-4 mb-6">
-            <div className="flex items-center">
-              {generating && <svg className="animate-spin h-5 w-5 mr-3 text-amber-400" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
-              <p className="text-amber-300">{progress}</p>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center">
+                {generating && (
+                  <svg className="animate-spin h-5 w-5 mr-3 text-amber-400" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                )}
+                <p className="text-amber-300">
+                  {job ? (PHASE_LABELS[job.current_phase] || job.current_phase) : progress}
+                </p>
+              </div>
+              {job && (job.status === 'queued' || job.status === 'running') && (
+                <button
+                  onClick={handleCancel}
+                  className="text-xs px-3 py-1 rounded border border-red-500 text-red-300 hover:bg-red-900/40"
+                >
+                  Cancel
+                </button>
+              )}
             </div>
+
+            {job && job.total_cases > 0 && (
+              <>
+                <div className="w-full h-2 bg-stone-700 rounded overflow-hidden">
+                  <div
+                    className="h-full bg-amber-500 transition-all"
+                    style={{ width: `${Math.round((job.progress || 0) * 100)}%` }}
+                  />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-xs text-stone-400">
+                  <span>{job.completed_cases} / {job.total_cases} cases</span>
+                  <span>Status: {job.status}</span>
+                </div>
+              </>
+            )}
+
+            {job && job.errors_count > 0 && (
+              <div className="mt-3 text-xs text-yellow-300">
+                ⚠ {job.errors_count} case{job.errors_count === 1 ? '' : 's'} fell back to a template after retries.
+                The package still ships, but the generation_summary.json file inside the ZIP lists the failures.
+              </div>
+            )}
+
+            {job && job.status === 'failed' && job.error_message && (
+              <div className="mt-3 text-xs text-red-300">{job.error_message}</div>
+            )}
           </div>
         )}
 

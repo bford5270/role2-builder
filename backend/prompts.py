@@ -1,0 +1,109 @@
+"""
+Provider-agnostic prompts shared by all CaseProvider implementations.
+
+Kept here (not in providers/) so the same wording feeds Gemini today and
+Bedrock-Claude in GovCloud later — only the transport changes.
+"""
+
+CASE_SYSTEM_PROMPT = """You are an expert Military Medical Simulation Designer for Role 2 (Forward Surgical) care.
+Generate a detailed simulation case with:
+1. Z-MIST (Zap=EXACTLY 5 digits, Mechanism, Injuries, Signs, Treatment)
+2. 9-Line Medevac (NATO format)
+3. Clinical Phases — only include phases specified; some cases bypass surgery entirely
+4. Vitals trends (3-4 timestamps per phase)
+5. Contingencies (If/Then decision points)
+6. Evacuation (transport type, considerations, handover notes)
+7. Learning Objectives (3-5 specific, measurable)
+8. Debrief Questions (4-6 thought-provoking)
+
+ROLE 2 CLINICAL PATHWAY (the patient's physical movement through the facility):
+- SURGICAL case: STP arrival → DCR (Shock Trauma Platoon resuscitation) → DCS (FRSS damage control surgery) → PCC (Holding bay, post-operative recovery + evacuation prep).
+- NON-SURGICAL case: STP arrival → DCR → PCC (Holding bay, observation + ongoing resuscitation + evacuation prep). The patient bypasses the FRSS entirely; there is no surgery.
+
+For NON-SURGICAL cases, set "dcs" to null AND write the PCC narrative as holding-bay monitoring / ongoing care / evac prep — NOT post-operative recovery (there was no operation). The clinical story should make it clear the patient never needed the OR.
+
+Keep narratives focused — 2-4 sentences per phase, not paragraphs. Contingencies are 3-5 clinically meaningful If/Then decision points, not exhaustive enumerations. Vitals trends are 3-4 timestamps per phase capturing the actual physiology arc.
+
+JSON STRUCTURE:
+{
+  "meta": {"title": "String", "estimated_duration": "String", "personnel": "String", "target_specialty": "String"},
+  "learning_objectives": ["String"],
+  "zmist": {"zap": "5 digits", "mechanism": "String", "injuries": "String", "signs": "String", "treatment": "String"},
+  "nine_line": {"line1_location": "String", "line2_freq": "String", "line3_patients_precedence": "String", "line4_equipment": "String", "line5_patients_type": "String", "line6_security": "String", "line7_marking": "String", "line8_nationality": "String", "line9_nbc_terrain": "String"},
+  "patient_data": {"demographics": "String", "history": "String", "allergies": "String"},
+  "triage_category": "T1/T2/T3/T4",
+  "phases": {
+    "dcr": {"title": "Damage Control Resuscitation", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [{"time": "String", "hr": "String", "bp": "String", "rr": "String", "spo2": "String", "gcs": "String"}], "contingencies": [{"condition": "String", "consequence": "String", "intervention": "String"}]},
+    "dcs": null or {"title": "Damage Control Surgery", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [...], "contingencies": [...]},
+    "pcc": {"title": "Prolonged Casualty Care", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [...], "contingencies": [...]}
+  },
+  "labs": {"hgb": "String", "ph": "String", "lactate": "String", "base_excess": "String", "inr": "String"},
+  "evacuation": {"transport_type": "String", "priority": "String", "considerations": "String", "handover_notes": "String"},
+  "debrief_questions": ["String"]
+}
+
+Do not invent IDs. The server will inject stable IDs after parsing your response.
+"""
+
+
+def case_user_prompt(*, case_type: str, mechanism: str, environment: str, region: str, phases: list[str], target_triage: str | None = None) -> str:
+    """User-facing prompt for a single case generation. Provider-agnostic."""
+    if "DCS" in phases:
+        phase_instr = "Surgical case. Patient flow: STP → DCR → DCS (FRSS) → PCC (Holding, post-op). Include all three phases."
+    else:
+        phase_instr = (
+            "Non-surgical case. Patient flow: STP → DCR → PCC (Holding, observation/evac prep). "
+            "Bypass the FRSS entirely; set dcs to null. The PCC narrative is holding-bay care, NOT post-operative recovery."
+        )
+
+    triage_instr = (
+        f"The patient should be triage category {target_triage}. Calibrate vitals, mechanism severity, "
+        f"and clinical course to that category."
+    ) if target_triage else ""
+
+    return (
+        f"CONTEXT: Role 2 in {environment}, {region}.\n"
+        f"CASE: {case_type}\n"
+        f"MECHANISM: {mechanism}\n"
+        f"{phase_instr}\n"
+        f"{triage_instr}\n"
+        "Generate the case now."
+    )
+
+
+def case_batch_prompt(items: list) -> str:
+    """Prompt for N cases in one shot. Returns instructions to emit a JSON
+    object {"cases": [..N items..]} where each item matches CASE_SYSTEM_PROMPT.
+
+    `items` is a list of BatchItem; we render one numbered block per item so
+    the model can process them serially without losing track.
+    """
+    blocks = []
+    for i, item in enumerate(items, start=1):
+        if "DCS" in item.phases:
+            phase_instr = "Surgical. Path: STP → DCR → DCS (FRSS) → PCC."
+        else:
+            phase_instr = (
+                "Non-surgical. Path: STP → DCR → PCC (Holding, NOT post-op). "
+                "Bypass FRSS, dcs=null."
+            )
+        triage_instr = f"Triage category: {item.target_triage}." if item.target_triage else ""
+        blocks.append(
+            f"--- CASE {i} ---\n"
+            f"CONTEXT: Role 2 in {item.environment}, {item.region}.\n"
+            f"CASE: {item.case_type}\n"
+            f"MECHANISM: {item.mechanism}\n"
+            f"{phase_instr}\n"
+            f"{triage_instr}".rstrip()
+        )
+
+    body = "\n\n".join(blocks)
+    return (
+        f"Generate {len(items)} distinct simulation cases. Each case follows the JSON STRUCTURE "
+        f"defined in your system instructions.\n\n"
+        f"Return a single JSON object with the shape:\n"
+        f'{{"cases": [<case 1>, <case 2>, ..., <case {len(items)}>]}}\n\n'
+        f"Case order in the array MUST match the case numbers below. Do not skip cases. "
+        f"Do not include any prose outside the JSON.\n\n"
+        f"{body}"
+    )

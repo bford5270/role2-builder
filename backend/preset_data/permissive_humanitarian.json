@@ -1,0 +1,19 @@
+{
+  "label": "Permissive Humanitarian",
+  "description": "Low-threat humanitarian assistance / disaster relief. Skews toward DNBI and lower acuity; trauma drops, T3/T4 share grows. DRAFT — pending SME review.",
+  "overrides": {
+    "trauma_ratio_by_setting": {
+      "Humanitarian Assistance": 0.10,
+      "Stability Operations": 0.30,
+      "Defensive Operations": 0.40
+    },
+    "threat_level_shift": {
+      "Low": {"trauma_ratio": -0.20, "t1_pp": -0.12, "t3_pp": 0.12},
+      "Medium": {"trauma_ratio": -0.05, "t1_pp": -0.05, "t3_pp": 0.05}
+    },
+    "base_triage_distribution": {
+      "Humanitarian Assistance": {"T1": 0.03, "T2": 0.20, "T3": 0.55, "T4": 0.22},
+      "Stability Operations": {"T1": 0.07, "T2": 0.27, "T3": 0.50, "T4": 0.16}
+    }
+  }
+}

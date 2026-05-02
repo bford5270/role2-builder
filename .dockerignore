@@ -1,0 +1,61 @@
+# Keep the build context small. The builder + runtime stages only need
+# requirements.txt + the backend/ source tree.
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Frontend (built/deployed separately)
+node_modules/
+.next/
+out/
+src/
+public/
+package.json
+package-lock.json
+tsconfig.json
+next.config.ts
+postcss.config.mjs
+eslint.config.mjs
+tailwind.config.*
+
+# Repo metadata
+.git/
+.gitignore
+.github/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Docs aren't needed at runtime
+docs/
+
+# Env files (NEVER bake into images)
+.env
+.env.*
+!.env.example
+
+# Local infra / build output
+infra/
+out/
+*.zip
+*.tar.gz
+
+# Tests aren't needed at runtime; keep the image lean
+backend/tests/
+backend/scripts/
+# (preset_data/ stays — the server reads JSON bundles from it at runtime)

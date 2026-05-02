@@ -1,0 +1,5 @@
+{
+  "label": "USMC Default",
+  "description": "Baseline values shipped in matrices.py — equivalent to having no override applied. Useful as an explicit anchor.",
+  "overrides": {}
+}
