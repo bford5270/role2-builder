@@ -185,6 +185,16 @@ CASE_PROVIDER=bedrock python -m backend.scripts.doctor
 
 It walks every prereq (boto3 importable, AWS creds resolvable, `AWS_REGION` + `BEDROCK_MODEL_ID` set, real Converse call) and prints a green/red checklist. Exits 1 on any failure — safe to wire into a deployment script.
 
+### Verifying Sentry
+
+If `SENTRY_DSN` is set, exception capture is automatic — FastAPI route errors and background-job worker errors both ship to Sentry with `job_id` + `exercise_name` tags. To prove the DSN is wired up correctly:
+
+```bash
+SENTRY_DSN=https://...ingest.sentry.io/... python -m backend.scripts.sentry_test
+```
+
+Sends one info message + one test exception, both tagged `source=doctor` so you can filter them out of real noise later.
+
 ## Switching to Bedrock
 
 The `CaseProvider` ABC is the only thing main.py talks to, so switching is an env-var change. Steps:

@@ -37,6 +37,46 @@ from backend.presets import apply_preset, list_presets
 configure_logging()
 log = get_logger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Sentry error tracking
+# ---------------------------------------------------------------------------
+# Initialize BEFORE FastAPI() is constructed so the FastAPI integration can
+# auto-instrument the app. No-op when SENTRY_DSN is unset, so dev / test runs
+# don't accidentally ship events to a wrong project.
+
+def _init_sentry() -> None:
+    dsn = os.getenv("SENTRY_DSN")
+    if not dsn:
+        log.info("Sentry not configured (SENTRY_DSN unset)")
+        return
+    try:
+        import sentry_sdk
+    except ImportError:
+        log.warning("SENTRY_DSN is set but sentry-sdk is not installed; skipping init")
+        return
+
+    sentry_sdk.init(
+        dsn=dsn,
+        environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
+        release=os.getenv("SENTRY_RELEASE"),  # e.g. git short sha; None is fine
+        # Performance tracing — keep low to stay inside free tier (5K events/mo).
+        # Bump after you have a sense of your error volume.
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")),
+        profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.0")),
+        # Don't ship request bodies, headers with auth tokens, or DB rows by
+        # default. Add explicit attach_stacktrace if/when needed.
+        send_default_pii=False,
+        attach_stacktrace=True,
+        # Truncate long messages so a single bad case doesn't blow the quota.
+        max_value_length=2048,
+    )
+    log.info("Sentry initialized: env=%s", os.getenv("SENTRY_ENVIRONMENT", "production"))
+
+
+_init_sentry()
+
+
 # OpenAPI tag taxonomy — keeps /docs grouped sensibly.
 _TAG_GROUPS = [
     {"name": "system", "description": "Liveness probe + service metadata."},
@@ -708,87 +748,120 @@ async def generate_exercise(config: ExerciseConfig):
 
 async def _run_exercise_job_worker(job_id: str) -> None:
     """Background worker. Acquires the global semaphore so only one job runs
-    at a time, drives the pipeline, and updates the job row as it goes."""
-    store = get_job_store()
-    sem = get_job_semaphore()
-    record = await store.get(job_id)
-    if record is None:
-        log.warning("job vanished before worker pickup", extra={"job_id": job_id})
-        return
-    jlog = get_job_logger(job_id, exercise_name=record.config.get("exercise_name", "?"))
-    try:
-        config = ExerciseConfig(**record.config)
-    except Exception as e:
-        jlog.exception("invalid config in queued job: %s", e)
-        await store.mark_failed(job_id, f"invalid config: {e}")
-        return
+    at a time, drives the pipeline, and updates the job row as it goes.
 
-    async with sem:
-        # If the user cancelled while the job was queued, honor it without
-        # touching the LLM at all.
-        latest = await store.get(job_id)
-        if latest and latest.status == JobStatus.cancelled:
-            jlog.info("cancelled before start; worker exiting")
+    Wrapped in a Sentry isolation_scope so per-job tags (job_id,
+    exercise_name) attach to any captured exceptions but don't leak to other
+    in-flight jobs. FastAPI integration only auto-captures errors raised
+    inside route handlers; background tasks need explicit capture_exception.
+    """
+    # sentry_sdk.isolation_scope() is a no-op when SENTRY_DSN is unset.
+    try:
+        import sentry_sdk
+        scope_cm = sentry_sdk.isolation_scope()
+    except ImportError:
+        # Fallback no-op context if sentry-sdk isn't installed.
+        from contextlib import nullcontext
+        scope_cm = nullcontext()
+
+    with scope_cm as scope:
+        store = get_job_store()
+        sem = get_job_semaphore()
+        record = await store.get(job_id)
+        if record is None:
+            log.warning("job vanished before worker pickup", extra={"job_id": job_id})
+            return
+        if scope is not None:
+            scope.set_tag("job_id", job_id)
+            scope.set_tag("exercise_name", record.config.get("exercise_name", "?"))
+            scope.set_tag("total_cases", str(record.total_cases))
+        jlog = get_job_logger(job_id, exercise_name=record.config.get("exercise_name", "?"))
+        try:
+            config = ExerciseConfig(**record.config)
+        except Exception as e:
+            jlog.exception("invalid config in queued job: %s", e)
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(e)
+            except ImportError:
+                pass
+            await store.mark_failed(job_id, f"invalid config: {e}")
             return
 
-        jlog.info("worker started; total_cases=%d", record.total_cases)
-        await store.mark_running(job_id)
-        loop = asyncio.get_running_loop()
-
-        def on_case_progress(completed: int, total: int) -> None:
-            # case_generator's callback contract is sync; bridge to the async
-            # store via run_coroutine_threadsafe so we don't block the batch loop.
-            asyncio.run_coroutine_threadsafe(
-                store.update_progress(job_id, completed=completed),
-                loop,
-            )
-            jlog.debug("progress %d/%d", completed, total)
-
-        async def on_phase(phase: str) -> None:
-            # Avoid clobbering current_phase='cancelled' with a stale phase update.
-            cur = await store.get(job_id)
-            if cur and cur.status == JobStatus.cancelled:
-                return
-            jlog.info("phase=%s", phase, extra={"phase": phase})
-            await store.update_progress(job_id, current_phase=phase)
-
-        async def is_cancelled() -> bool:
-            cur = await store.get(job_id)
-            return cur is not None and cur.status == JobStatus.cancelled
-
-        try:
-            artifacts = await _run_exercise_pipeline(
-                config,
-                on_case_progress=on_case_progress,
-                on_phase=on_phase,
-                is_cancelled=is_cancelled,
-            )
-            if artifacts.cancelled:
-                # Worker honored the cancel request; status was already set to
-                # cancelled by the request_cancel call. Just leave it there.
-                jlog.info("cancelled mid-pipeline; partial work discarded")
+        async with sem:
+            # If the user cancelled while the job was queued, honor it without
+            # touching the LLM at all.
+            latest = await store.get(job_id)
+            if latest and latest.status == JobStatus.cancelled:
+                jlog.info("cancelled before start; worker exiting")
                 return
 
-            await on_phase("packaging")
-            exercise_id = await asyncio.to_thread(_save_exercise_to_db, config, artifacts)
+            jlog.info("worker started; total_cases=%d", record.total_cases)
+            await store.mark_running(job_id)
+            loop = asyncio.get_running_loop()
 
-            summary = artifacts.generation_summary
-            if summary.get("errors"):
-                await store.append_errors(job_id, summary["errors"])
-            await store.mark_complete(
-                job_id,
-                exercise_id=exercise_id,
-                generation_summary=summary,
-            )
-            jlog.info(
-                "complete: total=%d returned=%d fallback=%d errors=%d exercise_id=%s",
-                summary["total_requested"], summary["total_returned"],
-                summary["total_fallback"], len(summary.get("errors", [])),
-                exercise_id,
-            )
-        except Exception as e:
-            jlog.exception("worker failed: %s", e)
-            await store.mark_failed(job_id, str(e)[:1000])
+            def on_case_progress(completed: int, total: int) -> None:
+                # case_generator's callback contract is sync; bridge to the async
+                # store via run_coroutine_threadsafe so we don't block the batch loop.
+                asyncio.run_coroutine_threadsafe(
+                    store.update_progress(job_id, completed=completed),
+                    loop,
+                )
+                jlog.debug("progress %d/%d", completed, total)
+
+            async def on_phase(phase: str) -> None:
+                # Avoid clobbering current_phase='cancelled' with a stale phase update.
+                cur = await store.get(job_id)
+                if cur and cur.status == JobStatus.cancelled:
+                    return
+                jlog.info("phase=%s", phase, extra={"phase": phase})
+                await store.update_progress(job_id, current_phase=phase)
+
+            async def is_cancelled() -> bool:
+                cur = await store.get(job_id)
+                return cur is not None and cur.status == JobStatus.cancelled
+
+            try:
+                artifacts = await _run_exercise_pipeline(
+                    config,
+                    on_case_progress=on_case_progress,
+                    on_phase=on_phase,
+                    is_cancelled=is_cancelled,
+                )
+                if artifacts.cancelled:
+                    # Worker honored the cancel request; status was already set to
+                    # cancelled by the request_cancel call. Just leave it there.
+                    jlog.info("cancelled mid-pipeline; partial work discarded")
+                    return
+
+                await on_phase("packaging")
+                exercise_id = await asyncio.to_thread(_save_exercise_to_db, config, artifacts)
+
+                summary = artifacts.generation_summary
+                if summary.get("errors"):
+                    await store.append_errors(job_id, summary["errors"])
+                await store.mark_complete(
+                    job_id,
+                    exercise_id=exercise_id,
+                    generation_summary=summary,
+                )
+                jlog.info(
+                    "complete: total=%d returned=%d fallback=%d errors=%d exercise_id=%s",
+                    summary["total_requested"], summary["total_returned"],
+                    summary["total_fallback"], len(summary.get("errors", [])),
+                    exercise_id,
+                )
+            except Exception as e:
+                jlog.exception("worker failed: %s", e)
+                # Background tasks aren't covered by FastAPI's auto-capture,
+                # so push the exception to Sentry explicitly with the
+                # job_id/exercise_name tags from the outer isolation_scope.
+                try:
+                    import sentry_sdk
+                    sentry_sdk.capture_exception(e)
+                except ImportError:
+                    pass
+                await store.mark_failed(job_id, str(e)[:1000])
 
 
 @app.post(
