@@ -1,0 +1,16 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+  build:
+    commands:
+      - echo "Build complete — packaging for Elastic Beanstalk"
+
+artifacts:
+  files:
+    - Dockerfile
+    - requirements.txt
+    - backend/**/*
+  discard-paths: no
