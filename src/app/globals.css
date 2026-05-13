@@ -1,26 +1,189 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Role 2 Forward design system — console theme (default).
+   Token definitions; Tailwind v4 picks up @theme inline mappings
+   so utilities like bg-surface-1, text-ink-2, etc. are available.
+   ============================================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Spacing (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Radii */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+  --radius-pill: 9999px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-enter: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-med: 200ms;
+  --dur-slow: 280ms;
+
+  /* Signal colors (theme-independent; tuned for both themes) */
+  --signal-red: #B33A3A;
+  --signal-red-2: #8E2A2A;
+  --signal-amber: #C99A2E;
+  --signal-amber-2: #A07820;
+  --signal-green: #6B7F4F;
+  --signal-green-2: #54653D;
+  --signal-blue: #5B7A8B;
+  --signal-blue-2: #3F5A6B;
+  --expectant: #1B1B1B;
+}
+
+[data-theme="manual"] {
+  --surface-0: #E8DCC4;
+  --surface-1: #F1E8D4;
+  --surface-2: #DCCDB1;
+  --surface-3: #C8B295;
+  --surface-elev: #FBF6EA;
+
+  --ink-1: #2A2218;
+  --ink-2: #4A3F30;
+  --ink-3: #6B5E4A;
+  --ink-4: #8A7B62;
+  --ink-inverse: #F1E8D4;
+
+  --accent: #3F4A33;
+  --accent-hover: #4F5C41;
+  --accent-press: #2F3826;
+  --accent-on: #F1E8D4;
+  --accent-focus: var(--signal-amber);
+
+  --border-1: #C8B295;
+  --border-2: #A88B6E;
+  --border-focus: var(--signal-amber);
+
+  --classification-bg: #3A3025;
+  --classification-fg: #F1E8D4;
+
+  --scrim: rgba(40,32,20,0.55);
+
+  color-scheme: light;
+}
+
+:root,
+[data-theme="console"] {
+  --surface-0: #161814;
+  --surface-1: #1E211C;
+  --surface-2: #22251F;
+  --surface-3: #2D3128;
+  --surface-elev: #2A2E26;
+
+  --ink-1: #E8DCC4;
+  --ink-2: #C8B295;
+  --ink-3: #8E8068;
+  --ink-4: #5B5345;
+  --ink-inverse: #161814;
+
+  --accent: #C8B295;
+  --accent-hover: #D5C2A8;
+  --accent-press: #B09877;
+  --accent-on: #161814;
+  --accent-focus: var(--signal-amber);
+
+  --border-1: #2D3128;
+  --border-2: #3F4438;
+  --border-focus: var(--signal-amber);
+
+  --classification-bg: #0E0F0C;
+  --classification-fg: #C8B295;
+
+  --scrim: rgba(0,0,0,0.65);
+
+  color-scheme: dark;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-elev: var(--surface-elev);
+
+  --color-ink-1: var(--ink-1);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-ink-inverse: var(--ink-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-press: var(--accent-press);
+  --color-accent-on: var(--accent-on);
+
+  --color-border-1: var(--border-1);
+  --color-border-2: var(--border-2);
+
+  --color-signal-red: var(--signal-red);
+  --color-signal-amber: var(--signal-amber);
+  --color-signal-green: var(--signal-green);
+  --color-signal-blue: var(--signal-blue);
+
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  font-family: var(--font-body);
+  background: var(--surface-0);
+  color: var(--ink-1);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--surface-0);
+  color: var(--ink-1);
+  font-family: var(--font-body);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  color: var(--ink-1);
+  letter-spacing: -0.01em;
+}
+
+code, kbd, samp { font-family: var(--font-mono); }
+
+::selection { background: rgba(200, 178, 149, 0.25); }
+
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* Classification banner — 24px, sticky to top */
+.classification-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1100;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--classification-bg);
+  color: var(--classification-fg);
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
