@@ -627,13 +627,13 @@ async def generate_exercise(config: ExerciseConfig):
         threading.Thread(target=run_generation, daemon=True).start()
         while True:
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                item = await asyncio.wait_for(queue.get(), timeout=5.0)
                 if item is None:
                     break
                 yield f"data: {item}\n\n"
             except asyncio.TimeoutError:
-                # SSE comment keeps Railway's proxy from closing an idle connection
-                yield ": keepalive\n\n"
+                # Real data event (not SSE comment) so Railway's proxy can't strip it
+                yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
     return StreamingResponse(
         event_stream(),
