@@ -105,19 +105,19 @@ export default function HistoricExercisesPage() {
   };
 
   return (
-    <div className="min-h-screen bg-stone-900 text-amber-100 p-6">
+    <div className="min-h-screen bg-surface-0 text-ink-1 p-6">
       <div className="max-w-6xl mx-auto">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-amber-400">Historic Exercises</h1>
-            <p className="text-stone-400">View and download past exercise packages</p>
+            <h1 className="text-3xl font-bold font-display tracking-display text-ink-1">Historic exercises</h1>
+            <p className="text-ink-3 text-sm">View and download past exercise packages</p>
           </div>
-          <a href="/" className="text-amber-400 hover:text-amber-300 text-sm">← New Exercise</a>
+          <a href="/" className="text-accent hover:text-accent-hover text-sm">← New exercise</a>
         </div>
 
         {loading && (
-          <div className="flex items-center justify-center py-12">
-            <svg className="animate-spin h-8 w-8 text-amber-400" viewBox="0 0 24 24">
+          <div className="flex items-center justify-center py-12 text-ink-2">
+            <svg className="animate-spin h-6 w-6 text-accent" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
@@ -126,71 +126,70 @@ export default function HistoricExercisesPage() {
         )}
 
         {error && (
-          <div className="bg-red-900/50 border border-red-700 rounded-lg p-4 mb-6">
-            <p className="text-red-300">{error}</p>
+          <div className="bg-surface-2 border-l-4 border-signal-red rounded p-4 mb-6">
+            <p className="text-signal-red text-sm">{error}</p>
           </div>
         )}
 
         {!loading && exercises.length === 0 && (
-          <div className="bg-stone-800 border border-stone-700 rounded-lg p-8 text-center">
-            <p className="text-stone-400 mb-4">No exercises found</p>
-            <a href="/" className="text-amber-400 hover:text-amber-300 underline">Create your first exercise →</a>
+          <div className="bg-surface-1 border border-border-1 rounded p-8 text-center">
+            <p className="text-ink-3 mb-4">No exercises found.</p>
+            <a href="/" className="text-accent hover:text-accent-hover underline">Create your first exercise →</a>
           </div>
         )}
 
         <div className="space-y-4">
           {exercises.map((exercise) => (
-            <div key={exercise.id} className="bg-stone-800 border border-stone-700 rounded-lg p-4">
+            <div key={exercise.id} className="bg-surface-1 border border-border-1 rounded p-4">
               <div className="flex items-start justify-between mb-4">
                 <div>
-                  <h2 className="text-lg font-semibold text-amber-400">{exercise.name}</h2>
-                  <p className="text-xs text-stone-400">{formatDate(exercise.created_at)}</p>
+                  <h2 className="text-lg font-medium font-display text-ink-1">{exercise.name}</h2>
+                  <p className="text-xs font-mono text-ink-3 mt-0.5">{formatDate(exercise.created_at)}</p>
                 </div>
                 <button
                   onClick={() => downloadPackage(exercise.id, exercise.name)}
                   disabled={downloading === exercise.id}
-                  className={`px-4 py-2 rounded font-medium text-sm transition-all ${
+                  className={`px-4 py-2 rounded font-semibold text-xs uppercase tracking-caps transition-colors ${
                     downloading === exercise.id
-                      ? 'bg-stone-700 text-stone-500 cursor-wait'
-                      : 'bg-amber-600 hover:bg-amber-500 text-stone-900'
+                      ? 'bg-surface-3 text-ink-3 cursor-wait'
+                      : 'bg-accent hover:bg-accent-hover text-accent-on'
                   }`}
                 >
-                  {downloading === exercise.id ? 'Downloading...' : 'Download ZIP'}
+                  {downloading === exercise.id ? 'Downloading...' : 'Download zip'}
                 </button>
               </div>
 
               <div className="grid grid-cols-3 gap-4 mb-4 text-sm">
                 <div>
-                  <span className="text-stone-400">Duration:</span>
-                  <span className="ml-2">{exercise.duration || 'N/A'} days</span>
+                  <span className="text-xs uppercase tracking-caps text-ink-3">Duration</span>
+                  <span className="ml-2 font-mono text-ink-1">{exercise.duration || 'N/A'} days</span>
                 </div>
                 <div>
-                  <span className="text-stone-400">Environment:</span>
-                  <span className="ml-2">{exercise.environment || 'N/A'}</span>
+                  <span className="text-xs uppercase tracking-caps text-ink-3">Environment</span>
+                  <span className="ml-2 text-ink-1">{exercise.environment || 'N/A'}</span>
                 </div>
                 <div>
-                  <span className="text-stone-400">Cases:</span>
-                  <span className="ml-2">{exercise.total_cases}</span>
+                  <span className="text-xs uppercase tracking-caps text-ink-3">Cases</span>
+                  <span className="ml-2 font-mono text-ink-1">{exercise.total_cases}</span>
                 </div>
               </div>
 
-              <div className="border-t border-stone-700 pt-3">
-                <p className="text-xs text-stone-400 mb-2">Individual Documents</p>
+              <div className="border-t border-border-1 pt-3">
+                <p className="text-xs font-semibold uppercase tracking-caps text-ink-3 mb-2">Individual documents</p>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    { key: 'msel', label: 'MSEL', icon: '📊' },
-                    { key: 'warno', label: 'WARNO', icon: '📄' },
-                    { key: 'annex_q', label: 'Annex Q', icon: '🏥' },
-                    { key: 'medroe', label: 'MEDROE', icon: '⚖️' },
-                    { key: 'case_book', label: 'Case Book', icon: '📚' }
+                    { key: 'msel', label: 'MSEL' },
+                    { key: 'warno', label: 'WARNO' },
+                    { key: 'annex_q', label: 'Annex Q' },
+                    { key: 'medroe', label: 'MEDROE' },
+                    { key: 'case_book', label: 'Case book' }
                   ].map(doc => (
                     <button
                       key={doc.key}
                       onClick={() => downloadDocument(exercise.id, exercise.name, doc.key)}
-                      className="flex items-center gap-1 px-3 py-1 bg-stone-700 hover:bg-stone-600 rounded text-xs transition-colors"
+                      className="px-3 py-1 bg-surface-2 hover:bg-surface-3 border border-border-1 text-ink-2 rounded text-xs transition-colors"
                     >
-                      <span>{doc.icon}</span>
-                      <span>{doc.label}</span>
+                      {doc.label}
                     </button>
                   ))}
                 </div>

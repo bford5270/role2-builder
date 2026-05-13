@@ -138,6 +138,10 @@
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
+
+  --tracking-display: -0.01em;
+  --tracking-caps: 0.08em;
+  --tracking-caps-tight: 0.04em;
 }
 
 html {
