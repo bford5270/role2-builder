@@ -2,6 +2,8 @@ import os
 import random
 import json
 import zipfile
+import threading
+import uuid
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -9,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import FastAPI, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Text
 from sqlalchemy.ext.declarative import declarative_base
@@ -56,6 +59,9 @@ app.add_middleware(
 )
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+# Short-lived store for completed zip packages keyed by download token
+_packages: Dict[str, bytes] = {}
 
 # Pydantic Models
 class DayConfig(BaseModel):
@@ -550,52 +556,94 @@ def _generate_one(task: tuple, environment: str, region: str) -> Dict:
 
 @app.post("/generate-exercise")
 async def generate_exercise(config: ExerciseConfig):
-    try:
-        tasks = _build_case_tasks(config)
-        # Cap parallelism at 10 to stay within Gemini rate limits
-        max_workers = min(10, len(tasks))
-        results: Dict[int, Dict] = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_generate_one, t, config.environment, config.region): i for i, t in enumerate(tasks)}
-            for future in as_completed(futures):
-                results[futures[future]] = future.result()
-        cases = [results[i] for i in range(len(tasks))]
-        
-        random.shuffle(cases)
-        schedule = generate_schedule(config, cases)
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            f_warno = pool.submit(generate_warno, config)
-            f_annex = pool.submit(generate_annex_q, config)
-            f_medroe = pool.submit(generate_medroe, config)
-            warno = f_warno.result()
-            annex = f_annex.result()
-            medroe = f_medroe.result()
-        
-        # Save
-        if SessionLocal:
-            db = SessionLocal()
-            try:
-                ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases, msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe)
-                db.add(ex)
-                db.commit()
-            finally:
-                db.close()
-        
-        # ZIP
-        zip_buf = BytesIO()
-        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(schedule, config).getvalue())
-            zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), warno).getvalue())
-            zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
-            zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
-            zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
-        zip_buf.seek(0)
-        
-        return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    import asyncio
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def _emit(event: dict):
+        loop.call_soon_threadsafe(queue.put_nowait, json.dumps(event))
+
+    def run_generation():
+        try:
+            tasks = _build_case_tasks(config)
+            total = len(tasks)
+            _emit({"type": "start", "total": total})
+
+            cases_results: Dict[int, Dict] = {}
+            with ThreadPoolExecutor(max_workers=min(10, max(total, 1))) as pool:
+                futures = {pool.submit(_generate_one, t, config.environment, config.region): i
+                           for i, t in enumerate(tasks)}
+                completed = 0
+                for future in as_completed(futures):
+                    cases_results[futures[future]] = future.result()
+                    completed += 1
+                    _emit({"type": "progress", "completed": completed, "total": total})
+
+            cases = [cases_results[i] for i in range(total)]
+            _emit({"type": "status", "message": "Generating documents..."})
+
+            random.shuffle(cases)
+            schedule = generate_schedule(config, cases)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                f_warno = pool.submit(generate_warno, config)
+                f_annex = pool.submit(generate_annex_q, config)
+                f_medroe = pool.submit(generate_medroe, config)
+                warno = f_warno.result()
+                annex = f_annex.result()
+                medroe = f_medroe.result()
+
+            _emit({"type": "status", "message": "Assembling package..."})
+
+            if SessionLocal:
+                db = SessionLocal()
+                try:
+                    ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases,
+                                  msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe)
+                    db.add(ex)
+                    db.commit()
+                finally:
+                    db.close()
+
+            zip_buf = BytesIO()
+            with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(schedule, config).getvalue())
+                zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), warno).getvalue())
+                zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
+                zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
+                zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
+            zip_buf.seek(0)
+
+            token = str(uuid.uuid4())
+            _packages[token] = zip_buf.getvalue()
+            _emit({"type": "complete", "token": token, "filename": f"{config.exercise_name}_Package.zip"})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            _emit({"type": "error", "message": str(e)})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    async def event_stream():
+        threading.Thread(target=run_generation, daemon=True).start()
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield f"data: {item}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+@app.get("/download/{token}")
+async def download_package(token: str):
+    zip_bytes = _packages.pop(token, None)
+    if not zip_bytes:
+        raise HTTPException(status_code=404, detail="Package not found or already downloaded")
+    return Response(zip_bytes, media_type="application/zip",
+                    headers={"Content-Disposition": "attachment; filename=package.zip"})
 
 @app.get("/exercises")
 async def list_exercises():

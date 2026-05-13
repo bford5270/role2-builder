@@ -58,6 +58,7 @@ export default function TacticalScenarioPage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string>('');
+  const [progressPct, setProgressPct] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadName, setDownloadName] = useState<string>('');
 
@@ -109,35 +110,69 @@ export default function TacticalScenarioPage() {
 
   const handleGenerate = async () => {
     if (!config) return;
-    
+
     setGenerating(true);
     setError(null);
+    setDownloadUrl(null);
     setProgress('Preparing exercise configuration...');
+    setProgressPct(2);
 
     try {
-      const fullConfig: ExerciseConfig = { ...config, days: days };
-      setProgress('Generating cases and documents... This may take 1-2 minutes.');
-
+      const fullConfig: ExerciseConfig = { ...config, days };
       const response = await fetch(`${API_BASE}/generate-exercise`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fullConfig)
       });
 
-      if (!response.ok) {
+      if (!response.ok || !response.body) {
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Generation failed');
       }
 
-      setProgress('Package ready!');
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const filename = `${config.exercise_name}_Package.zip`;
-      setDownloadUrl(url);
-      setDownloadName(filename);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const event = JSON.parse(line.slice(6));
+
+          if (event.type === 'start') {
+            setProgress(`Generating ${event.total} patient cases...`);
+            setProgressPct(5);
+          } else if (event.type === 'progress') {
+            const pct = Math.round((event.completed / event.total) * 75);
+            setProgress(`Generating cases: ${event.completed} / ${event.total}`);
+            setProgressPct(5 + pct);
+          } else if (event.type === 'status') {
+            setProgress(event.message);
+            setProgressPct(event.message.includes('documents') ? 82 : 93);
+          } else if (event.type === 'complete') {
+            setProgressPct(100);
+            setProgress('Package ready!');
+            const dlResp = await fetch(`${API_BASE}/download/${event.token}`);
+            const blob = await dlResp.blob();
+            const url = window.URL.createObjectURL(blob);
+            setDownloadUrl(url);
+            setDownloadName(event.filename);
+          } else if (event.type === 'error') {
+            throw new Error(event.message);
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       setProgress('');
+      setProgressPct(0);
     } finally {
       setGenerating(false);
     }
@@ -261,9 +296,15 @@ export default function TacticalScenarioPage() {
 
         {progress && (
           <div className="bg-stone-800 border border-amber-700 rounded-lg p-4 mb-6">
-            <div className="flex items-center">
-              {generating && <svg className="animate-spin h-5 w-5 mr-3 text-amber-400" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
+            <div className="flex items-center mb-2">
+              {generating && <svg className="animate-spin h-5 w-5 mr-3 text-amber-400 flex-shrink-0" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
               <p className="text-amber-300">{progress}</p>
+            </div>
+            <div className="w-full bg-stone-700 rounded-full h-2">
+              <div
+                className="bg-amber-500 h-2 rounded-full transition-all duration-500"
+                style={{ width: `${progressPct}%` }}
+              />
             </div>
           </div>
         )}
