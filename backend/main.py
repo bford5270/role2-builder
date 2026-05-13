@@ -5,6 +5,7 @@ import zipfile
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import FastAPI, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -525,40 +526,50 @@ Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
         name = f"Operation {name}"
     return {"name": name}
 
+def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
+    """Return a list of (case_type, mechanism, is_trauma) tuples — one per patient."""
+    tasks = []
+    env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
+    for day in config.days:
+        trauma_ratio = 0.85 if day.mascal or day.tactical_setting in ["Frontal Attack", "Amphibious Assault"] else 0.50
+        num_trauma = int(day.total_patients * trauma_ratio)
+        num_dnbi = day.total_patients - num_trauma
+        for _ in range(num_trauma):
+            inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal and day.mascal_etiology else GENERAL_TRAUMA
+            tasks.append((random.choice(inj_types), day.mascal_etiology if day.mascal else day.tactical_setting, True))
+        for _ in range(num_dnbi):
+            tasks.append((random.choice(env_dnbi), f"DNBI - {config.environment}", False))
+    return tasks
+
+def _generate_one(task: tuple, environment: str, region: str) -> Dict:
+    case_type, mech, is_trauma = task
+    try:
+        return generate_case_sync(case_type, mech, environment, region)
+    except:
+        return create_fallback_case(case_type, mech, is_trauma)
+
 @app.post("/generate-exercise")
 async def generate_exercise(config: ExerciseConfig):
     try:
-        cases = []
-        
-        for day in config.days:
-            trauma_ratio = 0.85 if day.mascal or day.tactical_setting in ["Frontal Attack", "Amphibious Assault"] else 0.50
-            num_trauma = int(day.total_patients * trauma_ratio)
-            num_dnbi = day.total_patients - num_trauma
-            
-            # Trauma
-            for _ in range(num_trauma):
-                inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal and day.mascal_etiology else GENERAL_TRAUMA
-                case_type = random.choice(inj_types)
-                mech = day.mascal_etiology if day.mascal else day.tactical_setting
-                try:
-                    cases.append(generate_case_sync(case_type, mech, config.environment, config.region))
-                except:
-                    cases.append(create_fallback_case(case_type, mech, True))
-            
-            # DNBI
-            env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
-            for _ in range(num_dnbi):
-                case_type = random.choice(env_dnbi)
-                try:
-                    cases.append(generate_case_sync(case_type, f"DNBI - {config.environment}", config.environment, config.region))
-                except:
-                    cases.append(create_fallback_case(case_type, f"DNBI - {config.environment}", False))
+        tasks = _build_case_tasks(config)
+        # Cap parallelism at 10 to stay within Gemini rate limits
+        max_workers = min(10, len(tasks))
+        results: Dict[int, Dict] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_generate_one, t, config.environment, config.region): i for i, t in enumerate(tasks)}
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        cases = [results[i] for i in range(len(tasks))]
         
         random.shuffle(cases)
         schedule = generate_schedule(config, cases)
-        warno = generate_warno(config)
-        annex = generate_annex_q(config)
-        medroe = generate_medroe(config)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_warno = pool.submit(generate_warno, config)
+            f_annex = pool.submit(generate_annex_q, config)
+            f_medroe = pool.submit(generate_medroe, config)
+            warno = f_warno.result()
+            annex = f_annex.result()
+            medroe = f_medroe.result()
         
         # Save
         if SessionLocal:
