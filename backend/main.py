@@ -73,7 +73,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+_client = None
+
+def get_client():
+    global _client
+    if _client is None:
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            raise HTTPException(status_code=503, detail="GEMINI_API_KEY not set on server")
+        _client = genai.Client(api_key=key)
+    return _client
 
 # Short-lived store for completed zip packages keyed by download token
 _packages: Dict[str, bytes] = {}
@@ -187,7 +196,7 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
     
     prompt = f"CONTEXT: Role 2 in {environment}, {region}.\nCASE: {case_type}\nMECHANISM: {mechanism}\n{phase_instr}\nGenerate the case now."
     
-    response = client.models.generate_content(
+    response = get_client().models.generate_content(
         model="gemini-2.0-flash",
         contents=prompt,
         config={"system_instruction": CASE_SYSTEM_PROMPT, "response_mime_type": "application/json"}
@@ -226,7 +235,7 @@ Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {d.total_patients}
 
 Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
     
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return response.text
 
 def generate_annex_q(config: ExerciseConfig) -> str:
@@ -238,7 +247,7 @@ Specialists: {json.dumps(config.specialists)}
 
 Include: HSS concept, MTFs, MEDEVAC, Class VIII, blood support, dental, combat stress, PVNTMED"""
     
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return response.text
 
 def generate_medroe(config: ExerciseConfig) -> str:
@@ -251,7 +260,7 @@ CBRN: {has_cbrn}, Detainee Ops: {has_detainee}
 
 Include: Treatment priorities, evacuation priorities, holding policy, blood products, documentation, MASCAL procedures"""
     
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return response.text
 
 # Schedule generation
@@ -541,7 +550,7 @@ Structure:
 Banned words: Iron, Steel, Crimson, Eagle, Thunder, Guardian, Shield, Ghost, Phantom, Storm, Black, Red, Blue, Dragon, Tiger, Wolf, Hawk, Viper (if region is not maritime)
 
 Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
     name = response.text.strip().replace('"', '').replace("'", "")
     if not name.startswith("Operation"):
         name = f"Operation {name}"
