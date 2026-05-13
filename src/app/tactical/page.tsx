@@ -130,13 +130,20 @@ export default function TacticalScenarioPage() {
         throw new Error(err.detail || 'Failed to start generation');
       }
 
-      const { job_id } = await resp.json();
+      const data = await resp.json();
+      const job_id: string = data.job_id;
+      if (!job_id) throw new Error('Server did not return a job ID');
 
       while (true) {
         await new Promise(r => setTimeout(r, 2000));
 
-        const statusResp = await fetch(`${API_BASE}/jobs/${job_id}`);
-        if (!statusResp.ok) throw new Error('Lost contact with server');
+        let statusResp: Response;
+        try {
+          statusResp = await fetch(`${API_BASE}/jobs/${job_id}`);
+        } catch (fetchErr) {
+          throw new Error(`Cannot reach server at ${API_BASE} — check CORS or network`);
+        }
+        if (!statusResp.ok) throw new Error(`Server error ${statusResp.status} on job poll`);
         const job = await statusResp.json();
 
         if (job.status === 'error') throw new Error(job.error || 'Generation failed');

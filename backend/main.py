@@ -58,7 +58,10 @@ class Job(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 if engine:
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as _e:
+        print(f"WARNING: DB table creation failed: {_e}")
 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 
@@ -566,47 +569,57 @@ def _generate_one(task: tuple, environment: str, region: str) -> Dict:
     except:
         return create_fallback_case(case_type, mech, is_trauma)
 
-_jobs: Dict[str, Dict] = {}  # fallback when DB not configured
-
-def _job_update(job_id: str, **kwargs):
-    if SessionLocal:
-        db = SessionLocal()
-        try:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if job:
-                for k, v in kwargs.items():
-                    setattr(job, k, v)
-                db.commit()
-        finally:
-            db.close()
-    else:
-        if job_id in _jobs:
-            _jobs[job_id].update(kwargs)
-
-def _job_get(job_id: str):
-    if SessionLocal:
-        db = SessionLocal()
-        try:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if not job:
-                return None
-            return {"status": job.status, "progress": job.progress,
-                    "completed": job.completed, "total": job.total,
-                    "token": job.token, "filename": job.filename, "error": job.error}
-        finally:
-            db.close()
-    return _jobs.get(job_id)
+# In-memory job store — always used as primary, DB synced as best-effort
+_jobs: Dict[str, Dict] = {}
 
 def _job_create(job_id: str):
+    _jobs[job_id] = {"status": "running", "progress": "Starting...", "completed": 0, "total": 0}
     if SessionLocal:
-        db = SessionLocal()
         try:
-            db.add(Job(id=job_id))
-            db.commit()
-        finally:
-            db.close()
-    else:
-        _jobs[job_id] = {"status": "running", "progress": "Starting...", "completed": 0, "total": 0}
+            db = SessionLocal()
+            try:
+                db.add(Job(id=job_id))
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"DB job create failed (using memory only): {e}")
+
+def _job_update(job_id: str, **kwargs):
+    if job_id in _jobs:
+        _jobs[job_id].update(kwargs)
+    if SessionLocal:
+        try:
+            db = SessionLocal()
+            try:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    for k, v in kwargs.items():
+                        setattr(job, k, v)
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"DB job update failed: {e}")
+
+def _job_get(job_id: str):
+    # Memory first (fast, same-instance), DB as cross-instance fallback
+    if job_id in _jobs:
+        return _jobs[job_id]
+    if SessionLocal:
+        try:
+            db = SessionLocal()
+            try:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    return {"status": job.status, "progress": job.progress,
+                            "completed": job.completed, "total": job.total,
+                            "token": job.token, "filename": job.filename, "error": job.error}
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"DB job get failed: {e}")
+    return None
 
 def _run_generation(config: ExerciseConfig, job_id: str):
     try:
