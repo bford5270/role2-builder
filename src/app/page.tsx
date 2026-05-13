@@ -7,6 +7,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-produ
 export default function SetupPage() {
   const [exerciseName, setExerciseName] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
   const [duration, setDuration] = useState(3);
   const [supportedUnit, setSupportedUnit] = useState("Division");
   
@@ -304,32 +305,22 @@ export default function SetupPage() {
   // Generate exercise name
   const generateName = async () => {
     setIsGenerating(true);
+    setNameError(null);
     try {
       const resp = await fetch(`${API_BASE}/generate-name`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          environment, 
-          region, 
-          threatLevel, 
-          supportedUnit, 
-          seed: Math.random() 
-        }),
+        body: JSON.stringify({ environment, region, threatLevel, supportedUnit, seed: Math.random() }),
       });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error ${resp.status}`);
+      }
       const data = await resp.json();
+      if (!data.name) throw new Error('No name returned');
       setExerciseName(data.name);
     } catch (e) {
-      // Fallback names based on region
-      const fallbackNames: Record<string, string[]> = {
-        "Indo-Pacific": ["Operation Pacific Sentinel", "Operation Iron Dragon", "Operation Typhoon Shield"],
-        "CENTCOM": ["Operation Desert Forge", "Operation Sandstorm Guardian", "Operation Crimson Saber"],
-        "EUCOM": ["Operation Baltic Thunder", "Operation Nordic Defender", "Operation Iron Resolve"],
-        "AFRICOM": ["Operation Sahara Vigil", "Operation Lion's Shield", "Operation Obsidian Spear"],
-        "SOUTHCOM": ["Operation Jungle Serpent", "Operation Condor Strike", "Operation Amazon Shield"],
-        "NORTHCOM": ["Operation Arctic Defender", "Operation Polar Guardian", "Operation Northern Shield"],
-      };
-      const names = fallbackNames[region] || fallbackNames["Indo-Pacific"];
-      setExerciseName(names[Math.floor(Math.random() * names.length)]);
+      setNameError(e instanceof Error ? e.message : 'Failed to reach server');
     }
     setIsGenerating(false);
   };
@@ -386,11 +377,14 @@ export default function SetupPage() {
               <button
                 onClick={generateName}
                 disabled={isGenerating}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-wide transition-colors"
+                className={`px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-wide transition-colors text-white ${nameError ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400'}`}
               >
-                {isGenerating ? "..." : "AI Gen"}
+                {isGenerating ? "..." : nameError ? "Retry" : "AI Gen"}
               </button>
             </div>
+            {nameError && (
+              <p className="text-xs text-red-600 mt-1">{nameError}</p>
+            )}
           </div>
 
           {/* Duration */}
