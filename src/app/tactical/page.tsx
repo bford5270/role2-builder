@@ -58,6 +58,8 @@ export default function TacticalScenarioPage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string>('');
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadName, setDownloadName] = useState<string>('');
 
   useEffect(() => {
     const savedConfig = localStorage.getItem('exerciseConfig');
@@ -127,17 +129,12 @@ export default function TacticalScenarioPage() {
         throw new Error(errorData.detail || 'Generation failed');
       }
 
-      setProgress('Downloading package...');
+      setProgress('Package ready!');
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${config.exercise_name}_Package.zip`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      setProgress('Complete! Check your downloads folder.');
+      const filename = `${config.exercise_name}_Package.zip`;
+      setDownloadUrl(url);
+      setDownloadName(filename);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       setProgress('');
@@ -289,6 +286,20 @@ export default function TacticalScenarioPage() {
             <div className="bg-stone-700 rounded p-2 text-center"><div className="text-lg mb-1">📚</div><div>Case_Book.docx</div></div>
           </div>
         </div>
+
+        {downloadUrl && (
+          <div className="mt-6 bg-stone-800 border-2 border-amber-500 rounded-lg p-6 text-center">
+            <h3 className="text-amber-400 font-bold text-xl mb-1">Exercise Package Ready</h3>
+            <p className="text-stone-400 text-sm mb-4">{downloadName}</p>
+            <a
+              href={downloadUrl}
+              download={downloadName}
+              className="inline-block bg-amber-600 hover:bg-amber-500 text-stone-900 font-bold px-10 py-4 rounded-lg text-lg transition-colors shadow-lg"
+            >
+              Download Package (.zip)
+            </a>
+          </div>
+        )}
 
         {/* History Link */}
         <div className="mt-6 text-center">

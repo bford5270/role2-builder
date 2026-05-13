@@ -508,7 +508,17 @@ async def generate_name_endpoint(data: dict):
     threat = data.get("threatLevel", "")
     unit = data.get("supportedUnit", "Medical")
     
-    prompt = f"Generate one USMC exercise name for {unit} in {env}, {region}, {threat}. Two tactical words. Format: 'Operation [Word] [Word]'. Avoid: Crimson, Steel, Iron, Thunder, Eagle. Return ONLY the name. Seed: {random.random()}"
+    prompt = f"""Generate one military exercise name for a USMC {unit} HSS training exercise in {env} terrain, {region}, facing a {threat} threat.
+
+Format: "Operation [Descriptor] [Noun]" — 2 words after Operation, or occasionally 3 if it flows well.
+
+Structure:
+- Descriptor: an adjective that evokes the operational environment or tempo (e.g., Silent, Relentless, Fractured, Bleeding, Stalking, Burning, Severed, Hollow, Bitter)
+- Noun: pick ONE category — fierce animal (Viper, Jackal, Condor, Wolverine, Mako, Lynx, Mantis), masculine emotion (Fury, Wrath, Valor, Resolve, Defiance, Reckoning, Anguish), or military/defense concept (Rampart, Bastion, Crucible, Gauntlet, Threshold, Salient, Bulwark)
+
+Banned words: Iron, Steel, Crimson, Eagle, Thunder, Guardian, Shield, Ghost, Phantom, Storm, Black, Red, Blue, Dragon, Tiger, Wolf, Hawk, Viper (if region is not maritime)
+
+Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
     response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
     name = response.text.strip().replace('"', '').replace("'", "")
     if not name.startswith("Operation"):
