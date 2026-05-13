@@ -285,6 +285,17 @@ export default function SetupPage() {
     }));
   };
 
+  // Load exerciseName from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('exerciseName');
+    if (saved) setExerciseName(saved);
+  }, []);
+
+  // Persist exerciseName to localStorage on change
+  useEffect(() => {
+    localStorage.setItem('exerciseName', exerciseName);
+  }, [exerciseName]);
+
   // Store duration in localStorage
   useEffect(() => {
     localStorage.setItem('exDuration', duration.toString());
