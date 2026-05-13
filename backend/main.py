@@ -558,7 +558,7 @@ def _generate_one(task: tuple, environment: str, region: str) -> Dict:
 async def generate_exercise(config: ExerciseConfig):
     import asyncio
     queue: asyncio.Queue = asyncio.Queue()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _emit(event: dict):
         loop.call_soon_threadsafe(queue.put_nowait, json.dumps(event))
@@ -626,10 +626,14 @@ async def generate_exercise(config: ExerciseConfig):
     async def event_stream():
         threading.Thread(target=run_generation, daemon=True).start()
         while True:
-            item = await queue.get()
-            if item is None:
-                break
-            yield f"data: {item}\n\n"
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                if item is None:
+                    break
+                yield f"data: {item}\n\n"
+            except asyncio.TimeoutError:
+                # SSE comment keeps Railway's proxy from closing an idle connection
+                yield ": keepalive\n\n"
 
     return StreamingResponse(
         event_stream(),
