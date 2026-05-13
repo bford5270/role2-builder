@@ -114,59 +114,49 @@ export default function TacticalScenarioPage() {
     setGenerating(true);
     setError(null);
     setDownloadUrl(null);
-    setProgress('Preparing exercise configuration...');
+    setProgress('Starting...');
     setProgressPct(2);
 
     try {
       const fullConfig: ExerciseConfig = { ...config, days };
-      const response = await fetch(`${API_BASE}/generate-exercise`, {
+      const resp = await fetch(`${API_BASE}/generate-exercise`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fullConfig)
       });
 
-      if (!response.ok || !response.body) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Generation failed');
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || 'Failed to start generation');
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      const { job_id } = await resp.json();
 
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        await new Promise(r => setTimeout(r, 2000));
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+        const statusResp = await fetch(`${API_BASE}/jobs/${job_id}`);
+        if (!statusResp.ok) throw new Error('Lost contact with server');
+        const job = await statusResp.json();
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const event = JSON.parse(line.slice(6));
+        if (job.status === 'error') throw new Error(job.error || 'Generation failed');
 
-          if (event.type === 'start') {
-            setProgress(`Generating ${event.total} patient cases...`);
-            setProgressPct(5);
-          } else if (event.type === 'progress') {
-            const pct = Math.round((event.completed / event.total) * 75);
-            setProgress(`Generating cases: ${event.completed} / ${event.total}`);
-            setProgressPct(5 + pct);
-          } else if (event.type === 'status') {
-            setProgress(event.message);
-            setProgressPct(event.message.includes('documents') ? 82 : 93);
-          } else if (event.type === 'complete') {
-            setProgressPct(100);
-            setProgress('Package ready!');
-            const dlResp = await fetch(`${API_BASE}/download/${event.token}`);
-            const blob = await dlResp.blob();
-            const url = window.URL.createObjectURL(blob);
-            setDownloadUrl(url);
-            setDownloadName(event.filename);
-          } else if (event.type === 'error') {
-            throw new Error(event.message);
-          }
+        setProgress(job.progress);
+        if (job.total > 0) {
+          const casePct = Math.round((job.completed / job.total) * 75);
+          setProgressPct(5 + casePct);
+        }
+        if (job.progress.includes('documents')) setProgressPct(82);
+        if (job.progress.includes('Assembling')) setProgressPct(93);
+
+        if (job.status === 'complete') {
+          setProgressPct(100);
+          const dlResp = await fetch(`${API_BASE}/download/${job.token}`);
+          const blob = await dlResp.blob();
+          const url = window.URL.createObjectURL(blob);
+          setDownloadUrl(url);
+          setDownloadName(job.filename);
+          break;
         }
       }
     } catch (err) {

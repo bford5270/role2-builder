@@ -554,92 +554,96 @@ def _generate_one(task: tuple, environment: str, region: str) -> Dict:
     except:
         return create_fallback_case(case_type, mech, is_trauma)
 
+_jobs: Dict[str, Dict] = {}
+
+def _run_generation(config: ExerciseConfig, job_id: str):
+    def update(progress: str, completed: int = None, total: int = None):
+        _jobs[job_id]["progress"] = progress
+        if completed is not None:
+            _jobs[job_id]["completed"] = completed
+        if total is not None:
+            _jobs[job_id]["total"] = total
+
+    try:
+        tasks = _build_case_tasks(config)
+        total = len(tasks)
+        update("Generating cases...", completed=0, total=total)
+
+        cases_results: Dict[int, Dict] = {}
+        with ThreadPoolExecutor(max_workers=min(10, max(total, 1))) as pool:
+            futures = {pool.submit(_generate_one, t, config.environment, config.region): i
+                       for i, t in enumerate(tasks)}
+            completed = 0
+            for future in as_completed(futures):
+                cases_results[futures[future]] = future.result()
+                completed += 1
+                update(f"Generating cases: {completed} / {total}", completed=completed)
+
+        cases = [cases_results[i] for i in range(total)]
+        update("Generating documents...", completed=total)
+
+        random.shuffle(cases)
+        schedule = generate_schedule(config, cases)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_warno = pool.submit(generate_warno, config)
+            f_annex = pool.submit(generate_annex_q, config)
+            f_medroe = pool.submit(generate_medroe, config)
+            warno = f_warno.result()
+            annex = f_annex.result()
+            medroe = f_medroe.result()
+
+        update("Assembling package...")
+
+        if SessionLocal:
+            db = SessionLocal()
+            try:
+                ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases,
+                              msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe)
+                db.add(ex)
+                db.commit()
+            finally:
+                db.close()
+
+        zip_buf = BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(schedule, config).getvalue())
+            zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), warno).getvalue())
+            zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
+            zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
+            zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
+        zip_buf.seek(0)
+
+        token = str(uuid.uuid4())
+        _packages[token] = zip_buf.getvalue()
+        _jobs[job_id] = {
+            "status": "complete",
+            "progress": "Package ready!",
+            "completed": total,
+            "total": total,
+            "token": token,
+            "filename": f"{config.exercise_name}_Package.zip",
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _jobs[job_id] = {"status": "error", "progress": str(e), "error": str(e), "completed": 0, "total": 0}
+
+
 @app.post("/generate-exercise")
 async def generate_exercise(config: ExerciseConfig):
-    import asyncio
-    queue: asyncio.Queue = asyncio.Queue()
-    loop = asyncio.get_running_loop()
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "running", "progress": "Starting...", "completed": 0, "total": 0}
+    threading.Thread(target=_run_generation, args=(config, job_id), daemon=True).start()
+    return {"job_id": job_id}
 
-    def _emit(event: dict):
-        loop.call_soon_threadsafe(queue.put_nowait, json.dumps(event))
 
-    def run_generation():
-        try:
-            tasks = _build_case_tasks(config)
-            total = len(tasks)
-            _emit({"type": "start", "total": total})
+@app.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
-            cases_results: Dict[int, Dict] = {}
-            with ThreadPoolExecutor(max_workers=min(10, max(total, 1))) as pool:
-                futures = {pool.submit(_generate_one, t, config.environment, config.region): i
-                           for i, t in enumerate(tasks)}
-                completed = 0
-                for future in as_completed(futures):
-                    cases_results[futures[future]] = future.result()
-                    completed += 1
-                    _emit({"type": "progress", "completed": completed, "total": total})
-
-            cases = [cases_results[i] for i in range(total)]
-            _emit({"type": "status", "message": "Generating documents..."})
-
-            random.shuffle(cases)
-            schedule = generate_schedule(config, cases)
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                f_warno = pool.submit(generate_warno, config)
-                f_annex = pool.submit(generate_annex_q, config)
-                f_medroe = pool.submit(generate_medroe, config)
-                warno = f_warno.result()
-                annex = f_annex.result()
-                medroe = f_medroe.result()
-
-            _emit({"type": "status", "message": "Assembling package..."})
-
-            if SessionLocal:
-                db = SessionLocal()
-                try:
-                    ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases,
-                                  msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe)
-                    db.add(ex)
-                    db.commit()
-                finally:
-                    db.close()
-
-            zip_buf = BytesIO()
-            with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(schedule, config).getvalue())
-                zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), warno).getvalue())
-                zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
-                zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
-                zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
-            zip_buf.seek(0)
-
-            token = str(uuid.uuid4())
-            _packages[token] = zip_buf.getvalue()
-            _emit({"type": "complete", "token": token, "filename": f"{config.exercise_name}_Package.zip"})
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            _emit({"type": "error", "message": str(e)})
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-
-    async def event_stream():
-        threading.Thread(target=run_generation, daemon=True).start()
-        while True:
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=5.0)
-                if item is None:
-                    break
-                yield f"data: {item}\n\n"
-            except asyncio.TimeoutError:
-                # Real data event (not SSE comment) so Railway's proxy can't strip it
-                yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-    )
 
 @app.get("/download/{token}")
 async def download_package(token: str):
