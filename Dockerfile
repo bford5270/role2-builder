@@ -11,4 +11,4 @@ COPY backend/ ./backend/
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 180"]
+CMD ["python", "-c", "import os,uvicorn; uvicorn.run('backend.main:app', host='0.0.0.0', port=int(os.environ.get('PORT',8000)), timeout_keep_alive=180)"]
