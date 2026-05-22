@@ -67,7 +67,7 @@ export default function TacticalScenarioPage() {
     if (savedConfig) {
       const parsed = JSON.parse(savedConfig) as ExerciseConfig;
       setConfig(parsed);
-      
+
       const initialDays: DayConfig[] = Array.from({ length: parsed.duration }, (_, i) => ({
         day_number: i + 1,
         tactical_setting: 'Defensive Operations',
@@ -177,194 +177,489 @@ export default function TacticalScenarioPage() {
 
   const getTotalCasualties = () => days.reduce((sum, d) => sum + d.total_patients, 0);
 
+  // Shared style objects
+  const labelStyle: React.CSSProperties = {
+    fontFamily: 'var(--font-body)',
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: '0.10em',
+    textTransform: 'uppercase',
+    color: 'var(--ink-3)',
+    display: 'block',
+    marginBottom: 4,
+  };
+
+  const inputStyle: React.CSSProperties = {
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border-2)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--ink-1)',
+    fontFamily: 'var(--font-body)',
+    fontSize: 13,
+    padding: '6px 10px',
+    width: '100%',
+    boxSizing: 'border-box',
+  };
+
+  const cardStyle: React.CSSProperties = {
+    background: 'var(--surface-1)',
+    border: '1px solid var(--border-1)',
+    borderRadius: 'var(--radius-md)',
+    padding: 20,
+  };
+
   if (!config) {
     return (
-      <div className="min-h-screen bg-surface-0 text-ink-1 p-8 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-xl font-medium font-display mb-4 text-ink-1">No exercise configuration found.</h2>
-          <a href="/" className="text-accent hover:text-accent-hover underline">← Return to setup</a>
+      <div style={{ minHeight: '100vh', background: 'var(--surface-0)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--ink-1)', marginBottom: 16 }}>
+            No exercise configuration found
+          </h2>
+          <a href="/" style={{ color: 'var(--signal-amber)', fontFamily: 'var(--font-body)', fontSize: 14, textDecoration: 'none' }}>
+            Return to Setup
+          </a>
         </div>
       </div>
     );
   }
 
+  const isDisabled = generating || days.some(d => d.mascal && !d.mascal_etiology);
+
   return (
-    <div className="min-h-screen bg-surface-0 text-ink-1 p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-6 flex items-center justify-between">
+    <div style={{ minHeight: '100vh', background: 'var(--surface-0)', padding: '24px' }}>
+      <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+
+        {/* Page header */}
+        <div style={{ marginBottom: 24, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div>
-            <h1 className="text-3xl font-bold font-display tracking-display text-ink-1">{config.exercise_name}</h1>
-            <p className="text-ink-3 text-sm font-mono">{config.duration} days · {config.environment} · {config.region} · {config.threat_level}</p>
+            <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 24, color: 'var(--ink-1)', letterSpacing: '-0.01em', margin: 0 }}>
+              {config.exercise_name}
+            </h1>
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)', marginTop: 4 }}>
+              {config.duration} Days &nbsp;|&nbsp; {config.environment} &nbsp;|&nbsp; {config.region} &nbsp;|&nbsp; {config.threat_level}
+            </p>
           </div>
-          <a href="/" className="text-accent hover:text-accent-hover text-sm">← Back to Setup</a>
+          <a href="/" style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-3)', textDecoration: 'none' }}>
+            Back to Setup
+          </a>
         </div>
 
-        <div className="bg-surface-1 border border-border-1 rounded p-4 mb-6 grid grid-cols-4 gap-4 text-center">
-          <div><div className="text-3xl font-mono font-medium text-ink-1">{config.duration}</div><div className="text-xs uppercase tracking-caps text-ink-3 mt-1">Days</div></div>
-          <div><div className="text-3xl font-mono font-medium text-ink-1">{getTotalCasualties()}</div><div className="text-xs uppercase tracking-caps text-ink-3 mt-1">Total casualties</div></div>
-          <div><div className="text-3xl font-mono font-medium text-signal-red">{days.filter(d => d.mascal).length}</div><div className="text-xs uppercase tracking-caps text-ink-3 mt-1">MASCAL events</div></div>
-          <div><div className="text-3xl font-mono font-medium text-signal-amber">{days.filter(d => d.cbrn).length}</div><div className="text-xs uppercase tracking-caps text-ink-3 mt-1">CBRN drills</div></div>
+        {/* Summary bar */}
+        <div style={{ ...cardStyle, marginBottom: 24, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, textAlign: 'center' }}>
+          {[
+            { value: config.duration, label: 'Days' },
+            { value: getTotalCasualties(), label: 'Total Casualties' },
+            { value: days.filter(d => d.mascal).length, label: 'MASCAL Events' },
+            { value: days.filter(d => d.cbrn).length, label: 'CBRN Drills' },
+          ].map(({ value, label }) => (
+            <div key={label}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 700, color: 'var(--ink-1)' }}>{value}</div>
+              <div style={labelStyle as React.CSSProperties}>{label}</div>
+            </div>
+          ))}
         </div>
 
-        <div className="space-y-4 mb-8">
+        {/* Day cards */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 32 }}>
           {days.map((day, idx) => (
-            <div key={idx} className="bg-surface-1 border border-border-1 rounded p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-medium font-display text-ink-1">Day {day.day_number}</h3>
+            <div key={idx} style={cardStyle}>
+              {/* Day header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16, color: 'var(--ink-1)', margin: 0, letterSpacing: '-0.01em' }}>
+                  Day {day.day_number}
+                </h3>
                 {idx < days.length - 1 && (
-                  <button onClick={() => copyDayConfig(idx)} className="text-xs text-ink-3 hover:text-accent transition-colors">Copy to remaining days →</button>
+                  <button
+                    onClick={() => copyDayConfig(idx)}
+                    style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--ink-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                  >
+                    Copy to remaining days
+                  </button>
                 )}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Main fields row */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16 }}>
                 <div>
-                  <label className="block text-xs text-ink-3 mb-1">Tactical Setting</label>
-                  <select value={day.tactical_setting} onChange={(e) => updateDay(idx, 'tactical_setting', e.target.value)} className="w-full bg-surface-2 border border-border-2 rounded px-3 py-2 text-sm">
+                  <label style={labelStyle}>Tactical Setting</label>
+                  <select
+                    value={day.tactical_setting}
+                    onChange={(e) => updateDay(idx, 'tactical_setting', e.target.value)}
+                    style={inputStyle}
+                  >
                     {TACTICAL_SETTINGS.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
+
                 <div>
-                  <label className="block text-xs text-ink-3 mb-1">Total Patients</label>
-                  <input type="number" min="1" max="50" value={day.total_patients} onChange={(e) => updateDay(idx, 'total_patients', parseInt(e.target.value) || 1)} className="w-full bg-surface-2 border border-border-2 rounded px-3 py-2 text-sm" />
+                  <label style={labelStyle}>Total Patients</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={day.total_patients}
+                    onChange={(e) => updateDay(idx, 'total_patients', parseInt(e.target.value) || 1)}
+                    style={inputStyle}
+                  />
                 </div>
+
                 <div>
-                  <label className="block text-xs text-ink-3 mb-1">Number of Waves</label>
-                  <input type="number" min="1" max="10" value={day.total_waves} onChange={(e) => updateDay(idx, 'total_waves', parseInt(e.target.value) || 1)} className="w-full bg-surface-2 border border-border-2 rounded px-3 py-2 text-sm" />
+                  <label style={labelStyle}>Waves</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={day.total_waves}
+                    onChange={(e) => updateDay(idx, 'total_waves', parseInt(e.target.value) || 1)}
+                    style={inputStyle}
+                  />
                 </div>
-                <div className="flex items-center">
-                  <label className="flex items-center cursor-pointer">
-                    <input type="checkbox" checked={day.night_ops} onChange={(e) => updateDay(idx, 'night_ops', e.target.checked)} className="sr-only" />
-                    <div className={`w-10 h-5 rounded-full transition-colors ${day.night_ops ? 'bg-accent' : 'bg-surface-3'}`}>
-                      <div className={`w-4 h-4 rounded-full bg-ink-1 mt-0.5 transition-transform ${day.night_ops ? 'translate-x-5' : 'translate-x-0.5'}`} />
+
+                {/* Night Ops toggle */}
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={day.night_ops}
+                      onChange={(e) => updateDay(idx, 'night_ops', e.target.checked)}
+                      style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+                    />
+                    {/* Toggle track */}
+                    <div
+                      style={{
+                        width: 40,
+                        height: 20,
+                        borderRadius: 10,
+                        background: day.night_ops ? 'var(--signal-amber)' : 'var(--surface-3)',
+                        position: 'relative',
+                        transition: 'background 0.2s',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 16,
+                          height: 16,
+                          borderRadius: '50%',
+                          background: 'var(--ink-1)',
+                          position: 'absolute',
+                          top: 2,
+                          left: day.night_ops ? 22 : 2,
+                          transition: 'left 0.2s',
+                        }}
+                      />
                     </div>
-                    <span className="ml-2 text-sm">Night Ops (1900-0700)</span>
+                    <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-2)' }}>
+                      Night Ops (1900–0700)
+                    </span>
                   </label>
                 </div>
               </div>
 
-              <div className="mt-4 pt-4 border-t border-border-1">
-                <div className="text-xs text-ink-3 mb-2">Operational Stressors</div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="bg-surface-2 rounded p-3">
-                    <label className="flex items-center cursor-pointer mb-2">
-                      <input type="checkbox" checked={day.mascal} onChange={(e) => updateDay(idx, 'mascal', e.target.checked)} className="sr-only" />
-                      <div className={`w-10 h-5 rounded-full transition-colors ${day.mascal ? 'bg-signal-red' : 'bg-surface-3'}`}>
-                        <div className={`w-4 h-4 rounded-full bg-ink-1 mt-0.5 transition-transform ${day.mascal ? 'translate-x-5' : 'translate-x-0.5'}`} />
+              {/* Stressors */}
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-1)' }}>
+                <div style={{ ...labelStyle, marginBottom: 10 } as React.CSSProperties}>Operational Stressors</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+
+                  {/* MASCAL */}
+                  <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-md)', padding: 12 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 10, marginBottom: day.mascal ? 10 : 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={day.mascal}
+                        onChange={(e) => updateDay(idx, 'mascal', e.target.checked)}
+                        style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+                      />
+                      <div
+                        style={{
+                          width: 40,
+                          height: 20,
+                          borderRadius: 10,
+                          background: day.mascal ? 'var(--signal-red)' : 'var(--surface-3)',
+                          position: 'relative',
+                          transition: 'background 0.2s',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: '50%',
+                            background: 'var(--ink-1)',
+                            position: 'absolute',
+                            top: 2,
+                            left: day.mascal ? 22 : 2,
+                            transition: 'left 0.2s',
+                          }}
+                        />
                       </div>
-                      <span className="ml-2 text-sm font-medium text-signal-red">MASCAL</span>
+                      <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, fontWeight: 600, color: 'var(--signal-red)' }}>
+                        MASCAL
+                      </span>
                     </label>
                     {day.mascal && (
-                      <div className="space-y-2 mt-2">
-                        <select value={day.mascal_etiology || ''} onChange={(e) => updateDay(idx, 'mascal_etiology', e.target.value)} className="w-full bg-surface-2 border border-border-2 rounded px-2 py-1 text-xs">
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <select
+                          value={day.mascal_etiology || ''}
+                          onChange={(e) => updateDay(idx, 'mascal_etiology', e.target.value)}
+                          style={{ ...inputStyle, fontSize: 12 }}
+                        >
                           <option value="">Select Etiology</option>
                           {MASCAL_ETIOLOGIES.map(e => <option key={e} value={e}>{e}</option>)}
                         </select>
-                        <input type="number" placeholder="MASCAL patients" min="3" max="20" value={day.mascal_patients || ''} onChange={(e) => updateDay(idx, 'mascal_patients', parseInt(e.target.value) || null)} className="w-full bg-surface-2 border border-border-2 rounded px-2 py-1 text-xs" />
+                        <input
+                          type="number"
+                          placeholder="MASCAL patient count"
+                          min="3"
+                          max="20"
+                          value={day.mascal_patients || ''}
+                          onChange={(e) => updateDay(idx, 'mascal_patients', parseInt(e.target.value) || null)}
+                          style={{ ...inputStyle, fontSize: 12 }}
+                        />
                       </div>
                     )}
                   </div>
-                  <div className="bg-surface-2 rounded p-3">
-                    <label className="flex items-center cursor-pointer">
-                      <input type="checkbox" checked={day.cbrn} onChange={(e) => updateDay(idx, 'cbrn', e.target.checked)} className="sr-only" />
-                      <div className={`w-10 h-5 rounded-full transition-colors ${day.cbrn ? 'bg-signal-amber' : 'bg-surface-3'}`}>
-                        <div className={`w-4 h-4 rounded-full bg-ink-1 mt-0.5 transition-transform ${day.cbrn ? 'translate-x-5' : 'translate-x-0.5'}`} />
+
+                  {/* CBRN */}
+                  <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-md)', padding: 12 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={day.cbrn}
+                        onChange={(e) => updateDay(idx, 'cbrn', e.target.checked)}
+                        style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+                      />
+                      <div
+                        style={{
+                          width: 40,
+                          height: 20,
+                          borderRadius: 10,
+                          background: day.cbrn ? 'var(--signal-amber)' : 'var(--surface-3)',
+                          position: 'relative',
+                          transition: 'background 0.2s',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: '50%',
+                            background: 'var(--ink-1)',
+                            position: 'absolute',
+                            top: 2,
+                            left: day.cbrn ? 22 : 2,
+                            transition: 'left 0.2s',
+                          }}
+                        />
                       </div>
-                      <span className="ml-2 text-sm font-medium text-signal-amber">CBRN Drill</span>
+                      <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, fontWeight: 600, color: 'var(--signal-amber)' }}>
+                        CBRN Drill
+                      </span>
                     </label>
-                    {day.cbrn && <p className="text-xs text-ink-3 mt-2">1-hour drill, all clinical ops paused</p>}
+                    {day.cbrn && (
+                      <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--ink-3)', marginTop: 8, marginBottom: 0 }}>
+                        1-hour drill, all clinical ops paused
+                      </p>
+                    )}
                   </div>
-                  <div className="bg-surface-2 rounded p-3">
-                    <label className="flex items-center cursor-pointer">
-                      <input type="checkbox" checked={day.detainee_ops} onChange={(e) => updateDay(idx, 'detainee_ops', e.target.checked)} className="sr-only" />
-                      <div className={`w-10 h-5 rounded-full transition-colors ${day.detainee_ops ? 'bg-signal-blue' : 'bg-surface-3'}`}>
-                        <div className={`w-4 h-4 rounded-full bg-ink-1 mt-0.5 transition-transform ${day.detainee_ops ? 'translate-x-5' : 'translate-x-0.5'}`} />
+
+                  {/* Detainee Ops */}
+                  <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-md)', padding: 12 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={day.detainee_ops}
+                        onChange={(e) => updateDay(idx, 'detainee_ops', e.target.checked)}
+                        style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+                      />
+                      <div
+                        style={{
+                          width: 40,
+                          height: 20,
+                          borderRadius: 10,
+                          background: day.detainee_ops ? 'var(--signal-amber)' : 'var(--surface-3)',
+                          position: 'relative',
+                          transition: 'background 0.2s',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: '50%',
+                            background: 'var(--ink-1)',
+                            position: 'absolute',
+                            top: 2,
+                            left: day.detainee_ops ? 22 : 2,
+                            transition: 'left 0.2s',
+                          }}
+                        />
                       </div>
-                      <span className="ml-2 text-sm font-medium text-signal-blue">Detainee Ops</span>
+                      <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, fontWeight: 600, color: 'var(--ink-2)' }}>
+                        Detainee Ops
+                      </span>
                     </label>
-                    {day.detainee_ops && <p className="text-xs text-ink-3 mt-2">Includes detainee medical scenarios</p>}
+                    {day.detainee_ops && (
+                      <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--ink-3)', marginTop: 8, marginBottom: 0 }}>
+                        Includes detainee medical scenarios
+                      </p>
+                    )}
                   </div>
+
                 </div>
               </div>
             </div>
           ))}
         </div>
 
-        {error && <div className="bg-surface-2 border-l-4 border-signal-red rounded p-4 mb-6"><p className="text-signal-red">{error}</p></div>}
+        {/* Error */}
+        {error && (
+          <div style={{ background: 'rgba(179,58,58,0.12)', border: '1px solid var(--signal-red)', borderRadius: 'var(--radius-md)', padding: '12px 16px', marginBottom: 20 }}>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--signal-red)', margin: 0 }}>{error}</p>
+          </div>
+        )}
 
+        {/* Progress */}
         {progress && (
-          <div className="bg-surface-1 border border-signal-amber rounded p-4 mb-6">
-            <div className="flex items-center mb-2">
-              {generating && <svg className="animate-spin h-5 w-5 mr-3 text-accent flex-shrink-0" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
-              <p className="text-accent-hover">{progress}</p>
+          <div style={{ ...cardStyle, marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              {generating && (
+                <svg
+                  style={{ width: 18, height: 18, flexShrink: 0, animation: 'spin 1s linear infinite', color: 'var(--signal-amber)' }}
+                  viewBox="0 0 24 24"
+                >
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.25" />
+                  <path fill="currentColor" opacity="0.75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              )}
+              <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-2)', margin: 0 }}>{progress}</p>
             </div>
-            <div className="w-full bg-surface-3 rounded-full h-2">
+            <div style={{ width: '100%', background: 'var(--surface-2)', borderRadius: 4, height: 6, overflow: 'hidden' }}>
               <div
-                className="bg-accent-hover h-2 rounded-full transition-all duration-500"
-                style={{ width: `${progressPct}%` }}
+                style={{
+                  background: 'var(--signal-amber)',
+                  height: '100%',
+                  width: `${progressPct}%`,
+                  borderRadius: 4,
+                  transition: 'width 0.5s ease',
+                }}
               />
             </div>
           </div>
         )}
 
-        <div className="flex justify-center">
+        {/* Generate button */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
           <button
             onClick={handleGenerate}
-            disabled={generating || days.some(d => d.mascal && !d.mascal_etiology)}
-            className={`px-8 py-3 rounded font-semibold uppercase tracking-caps text-base transition-colors ${generating || days.some(d => d.mascal && !d.mascal_etiology) ? 'bg-surface-2 text-ink-3 cursor-not-allowed' : 'bg-accent hover:bg-accent-hover text-accent-on'}`}
+            disabled={isDisabled}
+            style={{
+              background: isDisabled ? 'var(--surface-3)' : 'var(--accent)',
+              color: isDisabled ? 'var(--ink-4)' : 'var(--accent-on)',
+              fontFamily: 'var(--font-body)',
+              fontWeight: 600,
+              fontSize: 15,
+              border: 0,
+              borderRadius: 'var(--radius-md)',
+              padding: '14px 40px',
+              cursor: isDisabled ? 'not-allowed' : 'pointer',
+              letterSpacing: '0.02em',
+              transition: 'background 0.2s',
+            }}
           >
-            {generating ? 'Generating exercise package...' : 'Generate all documents'}
+            {generating ? 'Generating Exercise Package...' : 'Generate All Documents'}
           </button>
+          {days.some(d => d.mascal && !d.mascal_etiology) && (
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--signal-red)', margin: 0 }}>
+              Select a MASCAL etiology for all MASCAL days before generating.
+            </p>
+          )}
         </div>
 
-        {days.some(d => d.mascal && !d.mascal_etiology) && <p className="text-center text-signal-red text-sm mt-2">Select a MASCAL etiology for all MASCAL days.</p>}
-
-        <div className="mt-8 bg-surface-1 border border-border-1 rounded p-4">
-          <h3 className="font-medium font-display text-ink-1 mb-3">Package contents</h3>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
-            <div className="bg-surface-2 border border-border-1 rounded p-3 text-center">
-              <div className="text-xs uppercase tracking-caps text-ink-3 mb-1">MSEL</div>
-              <div className="font-mono text-xs text-ink-2">.xlsx</div>
-            </div>
-            <div className="bg-surface-2 border border-border-1 rounded p-3 text-center">
-              <div className="text-xs uppercase tracking-caps text-ink-3 mb-1">WARNO</div>
-              <div className="font-mono text-xs text-ink-2">.docx</div>
-            </div>
-            <div className="bg-surface-2 border border-border-1 rounded p-3 text-center">
-              <div className="text-xs uppercase tracking-caps text-ink-3 mb-1">Annex Q</div>
-              <div className="font-mono text-xs text-ink-2">.docx</div>
-            </div>
-            <div className="bg-surface-2 border border-border-1 rounded p-3 text-center">
-              <div className="text-xs uppercase tracking-caps text-ink-3 mb-1">MEDROE</div>
-              <div className="font-mono text-xs text-ink-2">.docx</div>
-            </div>
-            <div className="bg-surface-2 border border-border-1 rounded p-3 text-center">
-              <div className="text-xs uppercase tracking-caps text-ink-3 mb-1">Case book</div>
-              <div className="font-mono text-xs text-ink-2">.docx</div>
-            </div>
+        {/* Package contents */}
+        <div style={{ ...cardStyle, marginTop: 32 }}>
+          <div style={{ ...labelStyle, marginBottom: 12 } as React.CSSProperties}>Package Contents</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8 }}>
+            {[
+              { name: 'MSEL.xlsx' },
+              { name: 'WARNO.docx' },
+              { name: 'Annex_Q.docx' },
+              { name: 'MEDROE.docx' },
+              { name: 'Case_Book.docx' },
+            ].map(({ name }) => (
+              <div
+                key={name}
+                style={{
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--border-1)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px 12px',
+                  textAlign: 'center',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  color: 'var(--ink-2)',
+                }}
+              >
+                {name}
+              </div>
+            ))}
           </div>
         </div>
 
+        {/* Download ready */}
         {downloadUrl && (
-          <div className="mt-6 bg-surface-1 border border-signal-amber rounded p-6 text-center">
-            <h3 className="font-bold font-display text-2xl text-ink-1 mb-1">Exercise package ready</h3>
-            <p className="text-ink-3 text-sm font-mono mb-4">{downloadName}</p>
+          <div
+            style={{
+              marginTop: 24,
+              border: '1px solid var(--signal-green)',
+              background: 'rgba(107,127,79,0.10)',
+              borderRadius: 'var(--radius-md)',
+              padding: '28px 24px',
+              textAlign: 'center',
+            }}
+          >
+            <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 20, color: 'var(--ink-1)', margin: '0 0 6px', letterSpacing: '-0.01em' }}>
+              Exercise Package Ready
+            </h3>
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)', margin: '0 0 20px' }}>{downloadName}</p>
             <a
               href={downloadUrl}
               download={downloadName}
-              className="inline-block bg-accent hover:bg-accent-hover text-accent-on font-semibold uppercase tracking-caps px-8 py-3 rounded text-base transition-colors"
+              style={{
+                display: 'inline-block',
+                background: 'var(--accent)',
+                color: 'var(--accent-on)',
+                fontFamily: 'var(--font-body)',
+                fontWeight: 600,
+                fontSize: 15,
+                padding: '12px 36px',
+                borderRadius: 'var(--radius-md)',
+                textDecoration: 'none',
+                letterSpacing: '0.02em',
+              }}
             >
-              Download package (.zip)
+              Download Package (.zip)
             </a>
           </div>
         )}
 
-        {/* History Link */}
-        <div className="mt-6 text-center">
-          <a href="/history" className="text-accent hover:text-accent-hover underline text-sm">
-            View past exercises →
+        {/* History link */}
+        <div style={{ marginTop: 24, textAlign: 'center' }}>
+          <a
+            href="/history"
+            style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-3)', textDecoration: 'underline' }}
+          >
+            View Past Exercises
           </a>
         </div>
+
       </div>
+
+      {/* Keyframe animation for spinner (inline since no globals change allowed) */}
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

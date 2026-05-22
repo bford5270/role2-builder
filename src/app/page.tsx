@@ -10,19 +10,19 @@ export default function SetupPage() {
   const [nameError, setNameError] = useState<string | null>(null);
   const [duration, setDuration] = useState(3);
   const [supportedUnit, setSupportedUnit] = useState("Division");
-  
+
   // AOR expanded options
   const [environment, setEnvironment] = useState("Urban");
   const [threatLevel, setThreatLevel] = useState("Peer/Near-Peer");
   const [region, setRegion] = useState("Indo-Pacific");
-  
+
   // MET selection
   const [selectedMETs, setSelectedMETs] = useState<string[]>([]);
   const [expandedMET, setExpandedMET] = useState<string | null>(null);
-  
+
   // Footprint selection
   const [selectedFootprint, setSelectedFootprint] = useState<string[]>([]);
-  
+
   // Specialist staffing (0-5 each)
   const [specialists, setSpecialists] = useState<Record<string, number>>({
     "ERC Nurse": 0,
@@ -327,7 +327,7 @@ export default function SetupPage() {
 
   // Save configuration and proceed
   const saveAndProceed = () => {
-   const config = {
+    const config = {
       exercise_name: exerciseName,
       duration,
       supported_unit: supportedUnit,
@@ -339,78 +339,187 @@ export default function SetupPage() {
       specialists,
     };
     localStorage.setItem('exerciseConfig', JSON.stringify(config));
-    // Navigate to next page (scenario planning)
     window.location.href = '/tactical';
   };
 
+  // Shared style objects
+  const sectionStyle: React.CSSProperties = {
+    background: 'var(--surface-1)',
+    border: '1px solid var(--border-1)',
+    borderRadius: 'var(--radius-md)',
+    padding: 20,
+    marginBottom: 20,
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: 'block',
+    fontFamily: 'var(--font-body)',
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: '0.10em',
+    textTransform: 'uppercase',
+    color: 'var(--ink-3)',
+    marginBottom: 4,
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border-1)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--ink-1)',
+    fontFamily: 'var(--font-body)',
+    fontSize: 13,
+    padding: '7px 10px',
+    boxSizing: 'border-box',
+  };
+
+  const sectionHeadingStyle: React.CSSProperties = {
+    fontFamily: 'var(--font-display)',
+    fontWeight: 700,
+    fontSize: 14,
+    letterSpacing: '-0.01em',
+    color: 'var(--ink-1)',
+    margin: 0,
+  };
+
+  const dividerStyle: React.CSSProperties = {
+    borderBottom: '1px solid var(--border-1)',
+    marginBottom: 16,
+    paddingBottom: 12,
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  };
+
+  const chipBtnStyle: React.CSSProperties = {
+    fontFamily: 'var(--font-body)',
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    background: 'var(--surface-2)',
+    color: 'var(--ink-2)',
+    border: '1px solid var(--border-2)',
+    borderRadius: 'var(--radius-sm)',
+    padding: '4px 10px',
+    cursor: 'pointer',
+  };
+
+  const stepperBtnStyle: React.CSSProperties = {
+    width: 24,
+    height: 24,
+    borderRadius: 'var(--radius-sm)',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border-2)',
+    color: 'var(--ink-2)',
+    fontWeight: 700,
+    fontSize: 14,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    lineHeight: 1,
+  };
+
   return (
-    <div className="max-w-7xl mx-auto p-6 bg-surface-0 min-h-screen text-ink-1 font-sans">
+    <div
+      data-theme="manual"
+      style={{ maxWidth: 1200, margin: '0 auto', padding: '24px', background: 'var(--surface-0)', minHeight: '100vh' }}
+    >
       {/* Header */}
-      <header className="mb-8 border-b border-border-2 pb-4">
-        <h1 className="text-4xl font-bold font-display tracking-display text-ink-1">
+      <header style={{ marginBottom: 28, borderBottom: '2px solid var(--border-2)', paddingBottom: 16 }}>
+        <h1 style={{
+          fontFamily: 'var(--font-display)',
+          fontWeight: 700,
+          fontSize: 28,
+          letterSpacing: '-0.01em',
+          color: 'var(--ink-1)',
+          margin: 0,
+          textTransform: 'uppercase',
+        }}>
           Role 2 Exercise Builder
         </h1>
-        <p className="font-semibold uppercase tracking-caps text-xs mt-1 text-ink-3">
-          Medical Battalion mission essential task training planner
+        <p style={{
+          fontFamily: 'var(--font-body)',
+          fontWeight: 600,
+          fontSize: 10,
+          letterSpacing: '0.10em',
+          textTransform: 'uppercase',
+          color: 'var(--ink-3)',
+          marginTop: 4,
+          marginBottom: 0,
+        }}>
+          Medical Battalion Mission Essential Task Training Planner
         </p>
       </header>
 
       {/* Exercise Basics */}
-      <section className="bg-surface-1 p-5 rounded border border-border-1 mb-6">
-        <h2 className="text-xl font-medium font-display tracking-display text-ink-1 mb-4 border-b border-border-1 pb-2">
-          Exercise Information
-        </h2>
+      <section style={sectionStyle}>
+        <div style={{ ...dividerStyle }}>
+          <h2 style={sectionHeadingStyle}>Exercise Information</h2>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Exercise Name */}
           <div className="lg:col-span-2">
-            <label className="block text-xs font-semibold uppercase tracking-caps text-ink-3 mb-1">
-              Exercise Name
-            </label>
-            <div className="flex gap-2">
+            <label style={labelStyle}>Exercise Name</label>
+            <div style={{ display: 'flex', gap: 8 }}>
               <input
                 type="text"
                 value={exerciseName}
                 onChange={(e) => setExerciseName(e.target.value)}
                 placeholder="e.g., Operation Pacific Sentinel"
-                className="flex-1 bg-surface-2 text-ink-1 border border-border-2 rounded-sm px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-signal-amber"
+                style={{ ...inputStyle, flex: 1 }}
               />
               <button
                 onClick={generateName}
                 disabled={isGenerating}
-                className={`px-4 py-2 rounded font-semibold text-xs uppercase tracking-caps transition-colors ${nameError ? 'bg-signal-red hover:bg-signal-red-2 text-ink-1' : 'bg-accent hover:bg-accent-hover disabled:bg-ink-4 text-accent-on'}`}
+                style={{
+                  background: nameError ? 'var(--signal-red)' : 'var(--accent)',
+                  color: 'var(--accent-on)',
+                  fontFamily: 'var(--font-body)',
+                  fontWeight: 600,
+                  fontSize: 10,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  border: 0,
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0 14px',
+                  cursor: isGenerating ? 'not-allowed' : 'pointer',
+                  opacity: isGenerating ? 0.6 : 1,
+                  whiteSpace: 'nowrap',
+                }}
               >
-                {isGenerating ? "..." : nameError ? "Retry" : "AI Gen"}
+                {isGenerating ? '...' : nameError ? 'Retry' : 'AI Gen'}
               </button>
             </div>
             {nameError && (
-              <p className="text-xs text-signal-red mt-1">{nameError}</p>
+              <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--signal-red)', marginTop: 4, marginBottom: 0 }}>
+                {nameError}
+              </p>
             )}
           </div>
 
           {/* Duration */}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-caps text-ink-3 mb-1">
-              Duration (Days)
-            </label>
+            <label style={labelStyle}>Duration (Days)</label>
             <input
               type="number"
               value={duration}
               onChange={(e) => setDuration(Math.max(1, parseInt(e.target.value) || 1))}
               min="1"
               max="30"
-              className="w-full bg-surface-2 text-ink-1 border border-border-2 rounded-sm px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-signal-amber"
+              style={inputStyle}
             />
           </div>
 
           {/* Supported Unit */}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-caps text-ink-3 mb-1">
-              Supported Unit
-            </label>
+            <label style={labelStyle}>Supported Unit</label>
             <select
               value={supportedUnit}
               onChange={(e) => setSupportedUnit(e.target.value)}
-              className="w-full bg-surface-2 text-ink-1 border border-border-2 rounded-sm px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-signal-amber"
+              style={inputStyle}
             >
               <option value="Division">Division</option>
               <option value="CLB">Combat Logistics Battalion (CLB)</option>
@@ -420,20 +529,17 @@ export default function SetupPage() {
       </section>
 
       {/* AOR Section */}
-      <section className="bg-surface-1 p-5 rounded border border-border-1 mb-6">
-        <h2 className="text-xl font-medium font-display tracking-display text-ink-1 mb-4 border-b border-border-1 pb-2">
-          Area of Responsibility (AOR)
-        </h2>
+      <section style={sectionStyle}>
+        <div style={dividerStyle}>
+          <h2 style={sectionHeadingStyle}>Area of Responsibility (AOR)</h2>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Environment */}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-caps text-ink-3 mb-1">
-              Environment
-            </label>
+            <label style={labelStyle}>Environment</label>
             <select
               value={environment}
               onChange={(e) => setEnvironment(e.target.value)}
-              className="w-full bg-surface-2 text-ink-1 border border-border-2 rounded-sm px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-signal-amber"
+              style={inputStyle}
             >
               {ENVIRONMENTS.map(env => (
                 <option key={env} value={env}>{env}</option>
@@ -441,15 +547,12 @@ export default function SetupPage() {
             </select>
           </div>
 
-          {/* Threat Level */}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-caps text-ink-3 mb-1">
-              Threat Level
-            </label>
+            <label style={labelStyle}>Threat Level</label>
             <select
               value={threatLevel}
               onChange={(e) => setThreatLevel(e.target.value)}
-              className="w-full bg-surface-2 text-ink-1 border border-border-2 rounded-sm px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-signal-amber"
+              style={inputStyle}
             >
               {THREAT_LEVELS.map(threat => (
                 <option key={threat} value={threat}>{threat}</option>
@@ -457,15 +560,12 @@ export default function SetupPage() {
             </select>
           </div>
 
-          {/* Geographic Region */}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-caps text-ink-3 mb-1">
-              Geographic Region
-            </label>
+            <label style={labelStyle}>Geographic Region</label>
             <select
               value={region}
               onChange={(e) => setRegion(e.target.value)}
-              className="w-full bg-surface-2 text-ink-1 border border-border-2 rounded-sm px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-signal-amber"
+              style={inputStyle}
             >
               {REGIONS.map(reg => (
                 <option key={reg} value={reg}>{reg}</option>
@@ -476,77 +576,87 @@ export default function SetupPage() {
       </section>
 
       {/* Two Column Layout for METs and Footprint/Specialists */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
         {/* MET Selection */}
-        <section className="bg-surface-1 p-5 rounded border border-border-1">
-          <div className="flex justify-between items-center mb-4 border-b pb-2">
-            <h2 className="text-xl font-medium font-display tracking-display text-ink-1">
-              Mission Essential Tasks
-            </h2>
-            <div className="flex gap-2">
-              <button
-                onClick={selectAllMETs}
-                className="text-xs font-semibold uppercase tracking-caps bg-surface-2 hover:bg-surface-3 text-ink-1 px-3 py-1 rounded transition-colors"
-              >
-                Select All
-              </button>
-              <button
-                onClick={clearAllMETs}
-                className="text-xs font-semibold uppercase tracking-caps bg-surface-2 hover:bg-surface-3 text-ink-2 px-3 py-1 rounded transition-colors"
-              >
-                Clear
-              </button>
+        <section style={{ ...sectionStyle, marginBottom: 0 }}>
+          <div style={dividerStyle}>
+            <h2 style={sectionHeadingStyle}>Mission Essential Tasks</h2>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={selectAllMETs} style={chipBtnStyle}>Select All</button>
+              <button onClick={clearAllMETs} style={chipBtnStyle}>Clear</button>
             </div>
           </div>
 
-          <div className="space-y-2 max-h-[500px] overflow-y-auto pr-2">
+          <div style={{ maxHeight: 500, overflowY: 'auto', paddingRight: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {MET_DATA.map((met) => {
               const isSelected = selectedMETs.includes(met.id);
               const isFullySupported = isMETFullySupported(met);
               const missingFootprint = getMissingFootprint(met);
               const isExpanded = expandedMET === met.id;
 
+              const metCardBorder = isSelected
+                ? isFullySupported
+                  ? '1px solid var(--signal-green)'
+                  : '1px solid var(--signal-amber)'
+                : '1px solid var(--border-1)';
+
+              const metCardBg = isSelected
+                ? isFullySupported
+                  ? 'rgba(107,127,79,0.08)'
+                  : 'rgba(201,154,46,0.08)'
+                : 'var(--surface-2)';
+
               return (
                 <div
                   key={met.id}
-                  className={`border rounded overflow-hidden transition-all ${
-                    isSelected
-                      ? isFullySupported
-                        ? 'border-signal-green bg-surface-2'
-                        : 'border-signal-amber bg-surface-2'
-                      : 'border-border-1 bg-surface-1'
-                  }`}
+                  style={{
+                    border: metCardBorder,
+                    background: metCardBg,
+                    borderRadius: 'var(--radius-md)',
+                    overflow: 'hidden',
+                  }}
                 >
                   {/* MET Header */}
-                  <div className="flex items-center p-3">
+                  <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px' }}>
                     <input
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => toggleMET(met.id)}
-                      className="w-4 h-4 rounded-sm border-border-2 text-accent focus:ring-signal-amber mr-3"
+                      style={{ width: 14, height: 14, marginRight: 10, flexShrink: 0, accentColor: 'var(--accent)' }}
                     />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono bg-surface-3 text-ink-2 px-2 py-0.5 rounded-sm">
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 10,
+                          background: 'var(--surface-3)',
+                          color: 'var(--ink-2)',
+                          padding: '2px 6px',
+                          borderRadius: 'var(--radius-sm)',
+                        }}>
                           {met.mctTask}
                         </span>
-                        <span className="font-semibold text-sm text-ink-1">{met.name}</span>
+                        <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, fontWeight: 500, color: 'var(--ink-1)' }}>
+                          {met.name}
+                        </span>
                       </div>
                       {isSelected && !isFullySupported && (
-                        <div className="text-xs text-signal-amber mt-1 flex items-center gap-1">
-                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
+                          <svg style={{ width: 12, height: 12, color: 'var(--signal-amber)', flexShrink: 0 }} fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                           </svg>
-                          Missing: {missingFootprint.join(', ')}
+                          <span style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: 'var(--signal-amber)' }}>
+                            Missing: {missingFootprint.join(', ')}
+                          </span>
                         </div>
                       )}
                     </div>
                     <button
                       onClick={() => setExpandedMET(isExpanded ? null : met.id)}
-                      className="text-ink-3 hover:text-ink-1 p-1"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-3)' }}
                     >
                       <svg
-                        className={`w-5 h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                        style={{ width: 16, height: 16, transition: 'transform 0.2s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -558,15 +668,15 @@ export default function SetupPage() {
 
                   {/* PECLs Dropdown */}
                   {isExpanded && (
-                    <div className="border-t border-border-1 bg-surface-2 p-3">
-                      <p className="text-xs font-semibold uppercase tracking-caps text-ink-3 mb-2">
-                        Performance evaluation checklist items ({met.pecls.length})
+                    <div style={{ borderTop: '1px solid var(--border-1)', background: 'var(--surface-0)', padding: '10px 12px' }}>
+                      <p style={{ ...labelStyle, marginBottom: 8 }}>
+                        Performance Evaluation Checklist Items ({met.pecls.length})
                       </p>
-                      <ul className="text-xs text-ink-2 space-y-1 max-h-48 overflow-y-auto">
-                        {met.pecls.map((pecl, idx) => (
-                          <li key={idx} className="flex items-start gap-2">
-                            <span className="text-ink-3 font-mono w-4">{idx + 1}.</span>
-                            <span>{pecl}</span>
+                      <ul style={{ margin: 0, padding: 0, listStyle: 'none', maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {met.pecls.map((pecl, pIdx) => (
+                          <li key={pIdx} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', width: 18, flexShrink: 0 }}>{pIdx + 1}.</span>
+                            <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--ink-2)' }}>{pecl}</span>
                           </li>
                         ))}
                       </ul>
@@ -577,32 +687,20 @@ export default function SetupPage() {
             })}
           </div>
 
-          <div className="mt-3 pt-3 border-t border-border-1 text-sm text-ink-3">
-            <span className="font-semibold">{selectedMETs.length}</span> of {MET_DATA.length} METs selected
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-1)', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)' }}>
+            <span style={{ fontWeight: 600, color: 'var(--ink-2)' }}>{selectedMETs.length}</span> of {MET_DATA.length} METs selected
           </div>
         </section>
 
         {/* Right Column: Footprint + Specialists */}
-        <div className="space-y-6">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* Footprint Selection */}
-          <section className="bg-surface-1 p-5 rounded border border-border-1">
-            <div className="flex justify-between items-center mb-4 border-b pb-2">
-              <h2 className="text-xl font-medium font-display tracking-display text-ink-1">
-                Role 2 Footprint
-              </h2>
-              <div className="flex gap-2">
-                <button
-                  onClick={selectAllFootprint}
-                  className="text-xs font-semibold uppercase tracking-caps bg-surface-2 hover:bg-surface-3 text-ink-1 px-3 py-1 rounded transition-colors"
-                >
-                  Select All
-                </button>
-                <button
-                  onClick={clearAllFootprint}
-                  className="text-xs font-semibold uppercase tracking-caps bg-surface-2 hover:bg-surface-3 text-ink-2 px-3 py-1 rounded transition-colors"
-                >
-                  Clear
-                </button>
+          <section style={{ ...sectionStyle, marginBottom: 0 }}>
+            <div style={dividerStyle}>
+              <h2 style={sectionHeadingStyle}>Role 2 Footprint</h2>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={selectAllFootprint} style={chipBtnStyle}>Select All</button>
+                <button onClick={clearAllFootprint} style={chipBtnStyle}>Clear</button>
               </div>
             </div>
 
@@ -612,65 +710,70 @@ export default function SetupPage() {
                 return (
                   <label
                     key={component.id}
-                    className={`flex items-center p-3 rounded border cursor-pointer transition-colors ${
-                      isSelected
-                        ? 'border-signal-amber bg-surface-2'
-                        : 'border-border-1 bg-surface-1 hover:bg-surface-2'
-                    }`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      border: isSelected ? '1px solid var(--signal-green)' : '1px solid var(--border-1)',
+                      background: isSelected ? 'rgba(107,127,79,0.08)' : 'var(--surface-2)',
+                      cursor: 'pointer',
+                      transition: 'border-color 0.15s, background 0.15s',
+                    }}
                   >
                     <input
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => toggleFootprint(component.id)}
-                      className="w-4 h-4 rounded-sm border-border-2 text-accent focus:ring-signal-amber mr-3"
+                      style={{ width: 14, height: 14, marginRight: 10, accentColor: 'var(--accent)', flexShrink: 0 }}
                     />
-                    <span className="text-sm font-medium text-ink-1">{component.name}</span>
+                    <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, fontWeight: 500, color: 'var(--ink-1)' }}>
+                      {component.name}
+                    </span>
                   </label>
                 );
               })}
             </div>
 
-            <div className="mt-3 pt-3 border-t border-border-1 text-sm text-ink-3">
-              <span className="font-semibold">{selectedFootprint.length}</span> of {FOOTPRINT.length} components selected
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-1)', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)' }}>
+              <span style={{ fontWeight: 600, color: 'var(--ink-2)' }}>{selectedFootprint.length}</span> of {FOOTPRINT.length} components selected
             </div>
           </section>
 
           {/* Specialist Staffing */}
-          <section className="bg-surface-1 p-5 rounded border border-border-1">
-            <h2 className="text-xl font-medium font-display tracking-display text-ink-1 mb-4 border-b border-border-1 pb-2">
-              Specialist Staffing
-            </h2>
-            <p className="text-xs text-ink-3 mb-4">
-              Set the number of each specialist available (0-5). This will inform case generation.
+          <section style={{ ...sectionStyle, marginBottom: 0 }}>
+            <div style={dividerStyle}>
+              <h2 style={sectionHeadingStyle}>Specialist Staffing</h2>
+            </div>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--ink-3)', marginTop: 0, marginBottom: 14 }}>
+              Set the number of each specialist available (0–5). This will inform case generation.
             </p>
 
-            <div className="space-y-3">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {/* Nurses */}
               <div>
-                <p className="text-xs font-semibold uppercase tracking-caps text-ink-3 mb-2">Nursing</p>
+                <p style={{ ...labelStyle, marginBottom: 8 }}>Nursing</p>
                 <div className="grid grid-cols-2 gap-2">
                   {["ERC Nurse", "ER Nurse", "ICU Nurse", "Med Surg Nurse"].map((specialty) => (
                     <div
                       key={specialty}
-                      className="flex items-center justify-between bg-surface-2 rounded p-2 border border-border-1"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--border-1)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '8px 10px',
+                      }}
                     >
-                      <span className="text-sm font-medium text-ink-1">{specialty}</span>
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => updateSpecialist(specialty, specialists[specialty] - 1)}
-                          className="w-6 h-6 rounded-sm bg-surface-3 hover:bg-surface-elev text-ink-1 font-bold text-sm"
-                        >
-                          −
-                        </button>
-                        <span className="w-6 text-center font-mono text-sm text-ink-1">
+                      <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-1)' }}>{specialty}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <button onClick={() => updateSpecialist(specialty, specialists[specialty] - 1)} style={stepperBtnStyle}>−</button>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--ink-1)', width: 20, textAlign: 'center' }}>
                           {specialists[specialty]}
                         </span>
-                        <button
-                          onClick={() => updateSpecialist(specialty, specialists[specialty] + 1)}
-                          className="w-6 h-6 rounded-sm bg-surface-3 hover:bg-surface-elev text-ink-1 font-bold text-sm"
-                        >
-                          +
-                        </button>
+                        <button onClick={() => updateSpecialist(specialty, specialists[specialty] + 1)} style={stepperBtnStyle}>+</button>
                       </div>
                     </div>
                   ))}
@@ -679,30 +782,28 @@ export default function SetupPage() {
 
               {/* Physicians */}
               <div>
-                <p className="text-xs font-semibold uppercase tracking-caps text-ink-3 mb-2">Physicians</p>
+                <p style={{ ...labelStyle, marginBottom: 8 }}>Physicians</p>
                 <div className="grid grid-cols-2 gap-2">
                   {["Family Physician", "Emergency Medicine"].map((specialty) => (
                     <div
                       key={specialty}
-                      className="flex items-center justify-between bg-surface-2 rounded p-2 border border-border-1"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--border-1)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '8px 10px',
+                      }}
                     >
-                      <span className="text-sm font-medium text-ink-1">{specialty}</span>
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => updateSpecialist(specialty, specialists[specialty] - 1)}
-                          className="w-6 h-6 rounded-sm bg-surface-3 hover:bg-surface-elev text-ink-1 font-bold text-sm"
-                        >
-                          −
-                        </button>
-                        <span className="w-6 text-center font-mono text-sm text-ink-1">
+                      <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-1)' }}>{specialty}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <button onClick={() => updateSpecialist(specialty, specialists[specialty] - 1)} style={stepperBtnStyle}>−</button>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--ink-1)', width: 20, textAlign: 'center' }}>
                           {specialists[specialty]}
                         </span>
-                        <button
-                          onClick={() => updateSpecialist(specialty, specialists[specialty] + 1)}
-                          className="w-6 h-6 rounded-sm bg-surface-3 hover:bg-surface-elev text-ink-1 font-bold text-sm"
-                        >
-                          +
-                        </button>
+                        <button onClick={() => updateSpecialist(specialty, specialists[specialty] + 1)} style={stepperBtnStyle}>+</button>
                       </div>
                     </div>
                   ))}
@@ -711,30 +812,28 @@ export default function SetupPage() {
 
               {/* Surgeons */}
               <div>
-                <p className="text-xs font-semibold uppercase tracking-caps text-ink-3 mb-2">Surgical</p>
+                <p style={{ ...labelStyle, marginBottom: 8 }}>Surgical</p>
                 <div className="grid grid-cols-2 gap-2">
                   {["General Surgery", "Orthopaedic Surgery", "Anesthesiology"].map((specialty) => (
                     <div
                       key={specialty}
-                      className="flex items-center justify-between bg-surface-2 rounded p-2 border border-border-1"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--border-1)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '8px 10px',
+                      }}
                     >
-                      <span className="text-sm font-medium text-ink-1">{specialty}</span>
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => updateSpecialist(specialty, specialists[specialty] - 1)}
-                          className="w-6 h-6 rounded-sm bg-surface-3 hover:bg-surface-elev text-ink-1 font-bold text-sm"
-                        >
-                          −
-                        </button>
-                        <span className="w-6 text-center font-mono text-sm text-ink-1">
+                      <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-1)' }}>{specialty}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <button onClick={() => updateSpecialist(specialty, specialists[specialty] - 1)} style={stepperBtnStyle}>−</button>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--ink-1)', width: 20, textAlign: 'center' }}>
                           {specialists[specialty]}
                         </span>
-                        <button
-                          onClick={() => updateSpecialist(specialty, specialists[specialty] + 1)}
-                          className="w-6 h-6 rounded-sm bg-surface-3 hover:bg-surface-elev text-ink-1 font-bold text-sm"
-                        >
-                          +
-                        </button>
+                        <button onClick={() => updateSpecialist(specialty, specialists[specialty] + 1)} style={stepperBtnStyle}>+</button>
                       </div>
                     </div>
                   ))}
@@ -742,8 +841,9 @@ export default function SetupPage() {
               </div>
             </div>
 
-            <div className="mt-3 pt-3 border-t border-border-1 text-sm text-ink-3">
-              Total specialists: <span className="font-semibold">
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-1)', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)' }}>
+              Total specialists:&nbsp;
+              <span style={{ fontWeight: 600, color: 'var(--ink-2)' }}>
                 {Object.values(specialists).reduce((a, b) => a + b, 0)}
               </span>
             </div>
@@ -751,32 +851,57 @@ export default function SetupPage() {
         </div>
       </div>
 
-      {/* Summary & Navigation */}
-      <section className="bg-surface-2 text-ink-1 p-5 rounded border border-border-2">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div>
-            <h3 className="font-semibold font-display tracking-display text-base">Exercise summary</h3>
-            <p className="text-ink-3 text-sm mt-1">
-              {exerciseName || "Unnamed exercise"} • {duration} day{duration !== 1 ? 's' : ''} • {supportedUnit} • {environment} / {region}
-            </p>
-            <p className="text-ink-3 text-sm">
-              {selectedMETs.length} METs • {selectedFootprint.length} footprint components • {Object.values(specialists).reduce((a, b) => a + b, 0)} specialists
-            </p>
+      {/* Summary & Navigation footer */}
+      <section style={{
+        background: 'var(--accent)',
+        borderRadius: 'var(--radius-md)',
+        padding: '20px 24px',
+        marginBottom: 16,
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+            <div>
+              <p style={{ fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--accent-on)', margin: 0 }}>
+                Exercise Summary
+              </p>
+              <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'rgba(22,24,20,0.75)', marginTop: 4, marginBottom: 0 }}>
+                {exerciseName || 'Unnamed Exercise'} &bull; {duration} day{duration !== 1 ? 's' : ''} &bull; {supportedUnit} &bull; {environment} / {region}
+              </p>
+              <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'rgba(22,24,20,0.65)', marginTop: 2, marginBottom: 0 }}>
+                {selectedMETs.length} METs &bull; {selectedFootprint.length} Footprint Components &bull; {Object.values(specialists).reduce((a, b) => a + b, 0)} Specialists
+              </p>
+            </div>
+            <button
+              onClick={saveAndProceed}
+              disabled={selectedMETs.length === 0}
+              style={{
+                background: selectedMETs.length === 0 ? 'rgba(22,24,20,0.20)' : 'var(--surface-0)',
+                color: selectedMETs.length === 0 ? 'rgba(22,24,20,0.40)' : 'var(--ink-1)',
+                fontFamily: 'var(--font-body)',
+                fontWeight: 600,
+                fontSize: 13,
+                letterSpacing: '0.04em',
+                border: 0,
+                borderRadius: 'var(--radius-md)',
+                padding: '12px 24px',
+                cursor: selectedMETs.length === 0 ? 'not-allowed' : 'pointer',
+                textTransform: 'uppercase',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Continue to Scenario Planning
+            </button>
           </div>
-          <button
-            onClick={saveAndProceed}
-            disabled={selectedMETs.length === 0}
-            className="bg-accent hover:bg-accent-hover disabled:bg-ink-4 disabled:text-ink-3 text-accent-on px-6 py-3 rounded font-semibold uppercase tracking-caps transition-colors"
-          >
-            Continue to scenario planning →
-          </button>
         </div>
       </section>
 
       {/* History Link */}
-      <div className="mt-4 text-center">
-        <a href="/history" className="text-accent hover:text-accent-hover underline text-sm font-medium">
-          View past exercises →
+      <div style={{ textAlign: 'center', marginTop: 8 }}>
+        <a
+          href="/history"
+          style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)', textDecoration: 'underline' }}
+        >
+          View Past Exercises
         </a>
       </div>
     </div>
