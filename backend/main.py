@@ -142,22 +142,45 @@ GENERAL_TRAUMA = [
     "Penetrating neck trauma", "GSW chest with pneumothorax", "Pelvic fracture - stable", "Burn injury 15% TBSA"
 ]
 
-def determine_case_phases(case_type: str, mechanism: str) -> List[str]:
-    surgical = ["amputation", "evisceration", "vascular", "laceration", "hemothorax", "fasciotomy", 
-                "thoracotomy", "GSW abdomen", "penetrating chest", "pelvic fracture with", "compartment", "crush syndrome", "burns (>30%", "burns (>40%"]
-    medical = ["dengue", "malaria", "fever", "heat stroke", "hypothermia", "envenomation", "drowning", 
-               "decompression", "altitude", "HAPE", "HACE", "pneumonia", "gastroenteritis", "appendicitis", 
-               "kidney stones", "combat stress", "dental", "TBI", "concussion", "closed head"]
-    
+def determine_case_phases(case_type: str, mechanism: str, is_mascal: bool = False) -> List[str]:
+    surgical_kw = [
+        "amputation", "evisceration", "vascular injury", "hemothorax", "fasciotomy",
+        "thoracotomy", "GSW abdomen", "penetrating chest", "penetrating abdominal",
+        "pelvic fracture with hemorrhage", "compartment syndrome", "crush syndrome",
+        "burns (>30%", "burns (>40%", "severe thermal burns",
+        "liver laceration", "splenic laceration", "bilateral femur",
+        "penetrating torso", "multi-system blast trauma", "airway compromise",
+        "long bone fracture",
+    ]
+    non_surgical_kw = [
+        # Environmental / DNBI
+        "dengue", "malaria", "fever", "heat stroke", "hypothermia", "altitude",
+        "HAPE", "HACE", "pneumonia", "gastroenteritis", "appendicitis",
+        "kidney stones", "combat stress", "dental", "rhabdomyolysis",
+        "decompression sickness", "sand fly", "leptospirosis", "cold urticaria",
+        # Neuro / head
+        "TBI", "concussion", "closed head", "traumatic brain injury",
+        # Pulmonary / inhalation (medical management, not DCS)
+        "blast lung", "inhalation injury", "CO poisoning", "smoke inhalation",
+        "near-drowning", "drowning", "aspiration", "saltwater aspiration",
+        # Envenomation / marine
+        "envenomation", "jellyfish", "coral",
+        # Spinal (stabilisation, not immediate DCS)
+        "spinal cord", "C-spine",
+    ]
+
     case_lower = (case_type + " " + mechanism).lower()
-    
-    for kw in surgical:
+
+    for kw in surgical_kw:
         if kw.lower() in case_lower:
             return ["DCR", "DCS", "PCC"]
-    for kw in medical:
+    for kw in non_surgical_kw:
         if kw.lower() in case_lower:
             return ["DCR", "PCC"]
-    return ["DCR", "DCS", "PCC"]
+
+    # MASCAL waves produce high-acuity trauma — unmatched defaults to surgical.
+    # Routine waves are mixed-acuity — unmatched defaults to non-surgical.
+    return ["DCR", "DCS", "PCC"] if is_mascal else ["DCR", "PCC"]
 
 CASE_SYSTEM_PROMPT = """You are an expert Military Medical Simulation Designer for Role 2 (Forward Surgical) care.
 Generate a detailed simulation case with:
@@ -176,7 +199,7 @@ JSON STRUCTURE:
 {
   "meta": {"title": "String", "estimated_duration": "String", "personnel": "String", "target_specialty": "String"},
   "learning_objectives": ["String"],
-  "zmist": {"zap": "5 digits", "mechanism": "String", "injuries": "String", "signs": "String", "treatment": "String"},
+  "zmist": {"zap": "USE EXACT VALUE PROVIDED IN PROMPT", "mechanism": "String", "injuries": "String", "signs": "String", "treatment": "String"},
   "nine_line": {"line1_location": "String", "line2_freq": "String", "line3_patients_precedence": "String", "line4_equipment": "String", "line5_patients_type": "String", "line6_security": "String", "line7_marking": "String", "line8_nationality": "String", "line9_nbc_terrain": "String"},
   "patient_data": {"demographics": "String", "history": "String", "allergies": "String"},
   "triage_category": "T1/T2/T3/T4",
@@ -190,25 +213,39 @@ JSON STRUCTURE:
   "debrief_questions": ["String"]
 }"""
 
-def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str) -> Dict:
-    phases = determine_case_phases(case_type, mechanism)
+def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str, is_mascal: bool = False) -> Dict:
+    phases = determine_case_phases(case_type, mechanism, is_mascal)
     phase_instr = "This case does NOT require surgery. Only DCR and PCC. Set dcs to null." if phases == ["DCR", "PCC"] else "This case requires surgery. Include DCR, DCS, and PCC."
-    
-    prompt = f"CONTEXT: Role 2 in {environment}, {region}.\nCASE: {case_type}\nMECHANISM: {mechanism}\n{phase_instr}\nGenerate the case now."
-    
+
+    zap = str(random.randint(10000, 99999))
+
+    prompt = (
+        f"CONTEXT: Role 2 in {environment}, {region}.\n"
+        f"CASE: {case_type}\n"
+        f"MECHANISM: {mechanism}\n"
+        f"{phase_instr}\n"
+        f"ZAP NUMBER: Use exactly '{zap}' as the zap field — do not change it.\n"
+        f"Generate the case now."
+    )
+
     response = get_client().models.generate_content(
         model="gemini-2.0-flash",
         contents=prompt,
         config={"system_instruction": CASE_SYSTEM_PROMPT, "response_mime_type": "application/json"}
     )
-    
+
+    def _enforce_zap(data: Dict) -> Dict:
+        if "zmist" in data:
+            data["zmist"]["zap"] = zap
+        return data
+
     try:
-        return json.loads(response.text)
+        return _enforce_zap(json.loads(response.text))
     except json.JSONDecodeError:
         text = response.text
         start, end = text.find('{'), text.rfind('}') + 1
         if start != -1 and end > start:
-            return json.loads(text[start:end])
+            return _enforce_zap(json.loads(text[start:end]))
         raise
 
 def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True) -> Dict:
@@ -557,7 +594,7 @@ Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
     return {"name": name}
 
 def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
-    """Return a list of (case_type, mechanism, is_trauma) tuples — one per patient."""
+    """Return a list of (case_type, mechanism, is_trauma, is_mascal) tuples — one per patient."""
     tasks = []
     env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
     for day in config.days:
@@ -566,15 +603,15 @@ def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
         num_dnbi = day.total_patients - num_trauma
         for _ in range(num_trauma):
             inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal and day.mascal_etiology else GENERAL_TRAUMA
-            tasks.append((random.choice(inj_types), day.mascal_etiology if day.mascal else day.tactical_setting, True))
+            tasks.append((random.choice(inj_types), day.mascal_etiology if day.mascal else day.tactical_setting, True, bool(day.mascal)))
         for _ in range(num_dnbi):
-            tasks.append((random.choice(env_dnbi), f"DNBI - {config.environment}", False))
+            tasks.append((random.choice(env_dnbi), f"DNBI - {config.environment}", False, False))
     return tasks
 
 def _generate_one(task: tuple, environment: str, region: str) -> Dict:
-    case_type, mech, is_trauma = task
+    case_type, mech, is_trauma, is_mascal = task
     try:
-        return generate_case_sync(case_type, mech, environment, region)
+        return generate_case_sync(case_type, mech, environment, region, is_mascal)
     except:
         return create_fallback_case(case_type, mech, is_trauma)
 
