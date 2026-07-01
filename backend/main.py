@@ -44,6 +44,7 @@ class Exercise(Base):
     warno_text = Column(Text)
     annex_q_text = Column(Text)
     medroe_text = Column(Text)
+    road_to_war_text = Column(Text)
 
 class Job(Base):
     __tablename__ = "jobs"
@@ -62,6 +63,15 @@ if engine:
         Base.metadata.create_all(bind=engine)
     except Exception as _e:
         print(f"WARNING: DB table creation failed: {_e}")
+    # create_all does not ALTER existing tables — add newer columns idempotently.
+    try:
+        from sqlalchemy import text as _sql_text
+        with engine.begin() as _conn:
+            _conn.execute(_sql_text(
+                "ALTER TABLE exercises ADD COLUMN IF NOT EXISTS road_to_war_text TEXT"
+            ))
+    except Exception as _e:
+        print(f"WARNING: DB column migration (road_to_war_text) failed: {_e}")
 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 
@@ -344,6 +354,112 @@ Include: Treatment priorities, evacuation priorities, holding policy, blood prod
     
     response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return response.text
+
+def _road_to_war_fallback(config: "ExerciseConfig") -> str:
+    """Templated Road to War video prompt used when the AI call is unavailable."""
+    total_cas = sum(d.total_patients for d in config.days)
+    settings = "; ".join(
+        f"Day {d.day_number}: {d.tactical_setting}"
+        + (f" — MASCAL ({d.mascal_etiology})" if d.mascal else "")
+        for d in config.days
+    )
+    return f"""ROAD TO WAR — VIDEO GENERATION PROMPT
+Exercise: {config.exercise_name}
+
+Paste the block below into Claude to generate a cinematic "Road to War"
+scenario-setting video for this exercise. Edit any bracketed notes first.
+
+------------------------------------------------------------------------
+You are a military media producer. Create a 90-120 second cinematic
+"Road to War" video that sets the strategic scene for the training
+exercise "{config.exercise_name}". The video briefs participants on the
+geopolitical backstory that leads up to the medical/HSS mission they are
+about to rehearse.
+
+SCENARIO FACTS (ground every scene in these):
+- Operation: {config.exercise_name}
+- Region / theater: {config.region or "[region]"}
+- Environment: {config.environment}
+- Supported unit: {config.supported_unit}
+- Threat level: {config.threat_level}
+- Medical footprint deployed: {", ".join(config.selected_footprint) or "[footprint]"}
+- Projected casualty load: {total_cas} patients across {len(config.days)} day(s)
+- Daily flashpoints: {settings}
+
+STRUCTURE:
+1. COLD OPEN (0:00-0:10) — a tense, quiet establishing shot of the {config.environment}
+   theater; on-screen title card "{config.exercise_name}".
+2. GEOPOLITICAL BACKSTORY (0:10-0:40) — how tensions in {config.region or "the region"}
+   escalated toward conflict; map graphics showing forces massing.
+3. THE FLASHPOINT (0:40-1:00) — the triggering event that commits the
+   {config.supported_unit}; rising tempo, a {config.threat_level} adversary.
+4. THE MEDICAL PICTURE (1:00-1:30) — pivot to the HSS challenge: casualty
+   flow, MEDEVAC, and the Role 2 mission the audience must be ready for.
+   Draw specifics from the exercise's Annex Q (medical concept of support).
+5. CALL TO ACTION (1:30-end) — "This is the fight you are training for."
+
+STYLE: documentary/newsreel realism, desaturated palette, subtle map
+motion graphics, driving low-brass score, authoritative narration.
+Include narration script, on-screen text, and shot list. Keep it
+unclassified and fictional — this is for a training exercise.
+------------------------------------------------------------------------
+"""
+
+def generate_road_to_war_prompt(config: "ExerciseConfig", annex_text: str = "") -> str:
+    """Produce a ready-to-use prompt the user can hand to Claude to generate a
+    'Road to War' video tailored to this exercise's Annex Q."""
+    total_cas = sum(d.total_patients for d in config.days)
+    settings = "; ".join(
+        f"Day {d.day_number}: {d.tactical_setting}"
+        + (f", MASCAL: {d.mascal_etiology}" if d.mascal else "")
+        + (", CBRN" if d.cbrn else "")
+        for d in config.days
+    )
+    annex_excerpt = (annex_text or "")[:2500]
+    prompt = f"""You are writing a prompt that another person will paste into Claude to
+generate a cinematic 90-120 second "Road to War" scenario-setting video for a
+USMC medical (HSS) training exercise. Write ONLY that prompt — do not write the
+video itself, and do not add commentary before or after.
+
+The prompt you write must:
+- Instruct Claude to produce a Road to War video that establishes the
+  geopolitical backstory escalating to conflict, then pivots to the medical
+  threat picture the trainees must be ready for.
+- Be fully self-contained and grounded in the exercise facts below.
+- Specify: a scene-by-scene structure (cold open, backstory, flashpoint,
+  medical picture, call to action), narration script, on-screen text/title
+  cards, a shot list, map-graphic beats, tone, palette, pacing, and music.
+- Draw the medical picture (casualty flow, MEDEVAC, Role 2 capability) from
+  the Annex Q summary provided.
+- State that the content is unclassified, fictional, and for training only.
+
+EXERCISE FACTS:
+- Operation: {config.exercise_name}
+- Region/theater: {config.region}
+- Environment: {config.environment}
+- Supported unit: {config.supported_unit}
+- Threat level: {config.threat_level}
+- Medical footprint: {", ".join(config.selected_footprint)}
+- Total casualties: {total_cas} across {len(config.days)} day(s)
+- Daily settings: {settings}
+
+ANNEX Q (MEDICAL CONCEPT OF SUPPORT) SUMMARY:
+{annex_excerpt}
+
+Now write the Road to War video-generation prompt."""
+    try:
+        response = get_client().models.generate_content(
+            model="gemini-2.0-flash", contents=prompt
+        )
+        text = _response_text(response)
+        if text:
+            header = f"ROAD TO WAR — VIDEO GENERATION PROMPT\nExercise: {config.exercise_name}\n\nPaste the prompt below into Claude to generate the Road to War video.\n\n"
+            return header + text
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"WARNING: road-to-war prompt AI call failed, using fallback: {e}")
+    return _road_to_war_fallback(config)
 
 # Schedule generation
 def assign_evaluator(case: Dict, specialists: Dict[str, int], assigned_counts: Dict[str, int]) -> str:
@@ -777,13 +893,18 @@ def _run_generation(config: ExerciseConfig, job_id: str):
             annex = f_annex.result()
             medroe = f_medroe.result()
 
+        # Road to War video prompt is derived from the freshly generated Annex Q.
+        _job_update(job_id, progress="Writing Road to War prompt...")
+        road_to_war = generate_road_to_war_prompt(config, annex)
+
         _job_update(job_id, progress="Assembling package...")
 
         if SessionLocal:
             db = SessionLocal()
             try:
                 ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases,
-                              msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe)
+                              msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe,
+                              road_to_war_text=road_to_war)
                 db.add(ex)
                 db.commit()
             finally:
@@ -796,6 +917,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
             zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
             zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
             zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
+            zf.writestr(f"{config.exercise_name}_Road_to_War_Prompt.docx", create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), road_to_war).getvalue())
         zip_buf.seek(0)
 
         token = str(uuid.uuid4())
@@ -919,6 +1041,8 @@ async def download_exercise(exercise_id: int):
             zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", ex.annex_q_text).getvalue())
             zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), ex.medroe_text).getvalue())
             zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
+            road_to_war = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
+            zf.writestr(f"{config.exercise_name}_Road_to_War_Prompt.docx", create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), road_to_war).getvalue())
         zip_buf.seek(0)
         return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
     finally:
@@ -928,7 +1052,7 @@ async def download_exercise(exercise_id: int):
 async def download_document(exercise_id: int, doc_type: str):
     if not SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")
-    if doc_type not in ["msel", "warno", "annex_q", "medroe", "case_book"]:
+    if doc_type not in ["msel", "warno", "annex_q", "medroe", "case_book", "road_to_war"]:
         raise HTTPException(status_code=400, detail="Invalid doc type")
     
     db = SessionLocal()
@@ -959,6 +1083,9 @@ async def download_document(exercise_id: int, doc_type: str):
             buf, fn, mt = create_docx("ANNEX Q", f"TO OPORD {config.exercise_name.upper()}", ex.annex_q_text), f"{config.exercise_name}_Annex_Q.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         elif doc_type == "medroe":
             buf, fn, mt = create_docx("MEDROE", config.exercise_name.upper(), ex.medroe_text), f"{config.exercise_name}_MEDROE.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        elif doc_type == "road_to_war":
+            rtw = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
+            buf, fn, mt = create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), rtw), f"{config.exercise_name}_Road_to_War_Prompt.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         else:
             buf, fn, mt = create_case_book(cases, config), f"{config.exercise_name}_Case_Book.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         

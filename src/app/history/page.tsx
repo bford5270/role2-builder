@@ -73,14 +73,16 @@ export default function HistoricExercisesPage() {
         warno: 'docx',
         annex_q: 'docx',
         medroe: 'docx',
-        case_book: 'docx'
+        case_book: 'docx',
+        road_to_war: 'docx'
       };
       const labels: Record<string, string> = {
         msel: 'MSEL',
         warno: 'WARNO',
         annex_q: 'Annex_Q',
         medroe: 'MEDROE',
-        case_book: 'Case_Book'
+        case_book: 'Case_Book',
+        road_to_war: 'Road_to_War_Prompt'
       };
       
       a.download = `${exerciseName}_${labels[docType]}.${extensions[docType]}`;
@@ -182,7 +184,8 @@ export default function HistoricExercisesPage() {
                     { key: 'warno', label: 'WARNO' },
                     { key: 'annex_q', label: 'Annex Q' },
                     { key: 'medroe', label: 'MEDROE' },
-                    { key: 'case_book', label: 'Case book' }
+                    { key: 'case_book', label: 'Case book' },
+                    { key: 'road_to_war', label: 'Road to War' }
                   ].map(doc => (
                     <button
                       key={doc.key}
