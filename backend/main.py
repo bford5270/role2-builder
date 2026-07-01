@@ -540,51 +540,91 @@ def _clock(total_minutes: int) -> str:
     total_minutes %= 24 * 60
     return f"{total_minutes // 60:02d}{total_minutes % 60:02d}"
 
-# Evidence-based blood planning. Casualties who require transfusion consume, on
-# average, ~6 units whole-blood-equivalent — a mean, not a per-case guess.
-# Sources: "The thin red line: Blood planning factors and the enduring need for
-# a robust military blood system to support combat operations," J Trauma Acute
-# Care Surg 2024 (PMID 38996415), which frames blood-per-casualty planning
-# factors; combat DCR/massive-transfusion literature (massive transfusion =
-# >=10 RBC units/24h). Only clinically hemorrhaging casualties draw blood.
-BLOOD_UNITS_PER_TRANSFUSED = 6
-_HEMORRHAGE_KW = ("hemorrhage", "haemorrhage", "amputation", "gsw", "gunshot",
-                  "blast", "exsanguination", "massive", "junctional", "vascular",
-                  "penetrating", "laceration", "evisceration")
+# --- Evidence-based blood consumption model -------------------------------
+# Blood use is right-skewed: most transfused casualties take a few units while a
+# minority hit massive / ultra-massive transfusion and consume the majority of
+# supply. We model that tail with severity tiers rather than a flat mean.
+# Fixed clinical thresholds: massive transfusion (MT) = >=10 RBC units/24h;
+# ultra-massive (UMT) = >20 units (StatPearls, Massive Transfusion, NCBI
+# Bookshelf NBK499929). Per-casualty planning factors: "The thin red line:
+# Blood planning factors...", J Trauma Acute Care Surg 2024 (PMID 38996415).
+# Tier values (whole-blood-equivalent) are representative points inside each
+# evidence-defined band.
+_BLOOD_WBE = {"none": 0, "submassive": 4, "massive": 12, "ultramassive": 24}
+
+# Starting Role 2 low-titer O whole blood (LTOWB) on hand; usage is tracked
+# cumulatively against this, and the walking blood bank is flagged once spent.
+STARTING_LTOWB_UNITS = 30
+
+# Only clinically hemorrhaging casualties draw blood — derived from the case.
+_HEMORRHAGE_KW = ("hemorrhage", "haemorrhage", "amputation", "exsanguination",
+                  "junctional", "evisceration", "hemothorax", "haemothorax",
+                  "vascular", "gsw", "gunshot", "splenic", "hepatic", "aortic",
+                  "pelvic fracture", "mangled", "penetrating abdominal",
+                  "penetrating torso", "penetrating chest")
+_UMT_KW = ("bilateral", "mangled", "multiple amputation", "multiple amputations",
+           "dismounted complex blast", "multi-cavity", "multi cavity", "triple amputation")
+_MT_KW = ("amputation", "junctional", "evisceration", "hemothorax", "haemothorax",
+          "vascular", "splenic", "hepatic", "aortic", "pelvic fracture",
+          "exsanguination", "penetrating abdominal", "penetrating torso", "penetrating chest")
+
+def _case_text(case: Dict) -> str:
+    z = case.get("zmist", {})
+    return f"{z.get('injuries','')} {z.get('mechanism','')} {z.get('treatment','')}".lower()
 
 def _requires_blood(case: Dict) -> bool:
-    """Derived from the case, not rolled: a casualty needs blood if it goes to
-    surgery, is T1, or its injuries/treatment describe hemorrhage."""
+    """A casualty needs blood if it goes to surgery, is T1, or its injuries
+    describe hemorrhage. Derived from the case, never rolled."""
     if case.get("phases", {}).get("dcs") is not None:
         return True
     if case.get("triage_category") == "T1":
         return True
-    z = case.get("zmist", {})
-    text = f"{z.get('injuries','')} {z.get('treatment','')} {z.get('mechanism','')}".lower()
-    return any(k in text for k in _HEMORRHAGE_KW)
+    return any(k in _case_text(case) for k in _HEMORRHAGE_KW)
+
+def _blood_tier(case: Dict) -> str:
+    """Classify transfusion severity from case clinical facts."""
+    if not _requires_blood(case):
+        return "none"
+    text = _case_text(case)
+    if any(k in text for k in _UMT_KW):
+        return "ultramassive"
+    surgical = case.get("phases", {}).get("dcs") is not None
+    if surgical or case.get("triage_category") == "T1" or any(k in text for k in _MT_KW):
+        return "massive"
+    return "submassive"
 
 def _blood_units(case: Dict) -> int:
-    """Whole-blood-equivalent units for this casualty: the evidence-based mean
-    if transfusion is indicated, otherwise zero."""
-    return BLOOD_UNITS_PER_TRANSFUSED if _requires_blood(case) else 0
+    return _BLOOD_WBE[_blood_tier(case)]
 
-def _evac_min(precedence: str) -> int:
-    """POI->Role 2 transit planning bracket by evacuation precedence."""
+# --- Evacuation transit + Role 2 dwell, driven by exercise parameters ------
+# A few discrete options selected from the overall exercise parameters, not
+# fixed brackets: contested/near-peer theaters and harsh terrain lengthen the
+# POI->Role 2 timeline; MASCAL surge lengthens Role 2 holding.
+def _threat_evac_mult(threat: str) -> float:
+    t = (threat or "").lower()
+    if "peer" in t:        # Peer/Near-Peer — contested/denied MEDEVAC
+        return 3.0
+    if "hybrid" in t:
+        return 2.0
+    if "irregular" in t:
+        return 1.5
+    return 1.0             # HADR/Permissive
+
+_TERRAIN_ADD = {"urban": 0, "desert": 10, "littoral": 20, "maritime": 30,
+                "jungle": 30, "mountain": 40, "arctic": 45}
+
+def _transit_min(precedence: str, config) -> int:
+    """POI->Role 2 transit: precedence base x threat posture + terrain."""
     p = (precedence or "").lower()
-    if "urgent" in p:
-        return 30
-    if "priority" in p:
-        return 60
-    return 120  # routine / convenience
+    base = 30 if "urgent" in p else 60 if "priority" in p else 120
+    add = _TERRAIN_ADD.get((getattr(config, "environment", "") or "").lower(), 15)
+    return int(round(base * _threat_evac_mult(getattr(config, "threat_level", "")) + add))
 
-def _dwell_min(case: Dict) -> int:
-    """Role 2 treatment/OR occupancy bracket, used for the saturation picture."""
+def _dwell_min(case: Dict, is_mascal_wave: bool = False) -> int:
+    """Role 2 treatment/OR occupancy; MASCAL surge degrades throughput."""
     phases = case.get("phases", {}) or {}
-    if phases.get("dcs"):
-        return 150  # surgical: OR + immediate post-op hold
-    if phases.get("pcc"):
-        return 90   # resus + prolonged care hold
-    return 45
+    base = 150 if phases.get("dcs") else 90 if phases.get("pcc") else 45
+    return int(round(base * (1.5 if is_mascal_wave else 1.0)))
 
 def _route_and_inbound(case: Dict, is_mascal_wave: bool) -> tuple:
     """Decide route + whether the casualty is called in to the COC, using only
@@ -601,7 +641,7 @@ def _route_and_inbound(case: Dict, is_mascal_wave: bool) -> tuple:
         return transport, True
     return ("Litter" if is_mascal_wave else "MEDEVAC"), True
 
-def _case_teo(case: Dict) -> Dict:
+def _case_teo(case: Dict, is_mascal_wave: bool = False) -> Dict:
     """Flatten the case's own clinical detail for the T&EO sheet. Pulls straight
     from the generated case — nothing is invented here."""
     phases = case.get("phases", {}) or {}
@@ -615,13 +655,15 @@ def _case_teo(case: Dict) -> Dict:
     care_level = "DCR" + ("+DCS" if phases.get("dcs") else "") + ("+PCC" if phases.get("pcc") else "")
     contingencies = [c for c in _collect("contingencies") if isinstance(c, dict)]
     evac = case.get("evacuation", {}) or {}
+    tier = _blood_tier(case)
     return {
         "zap": case.get("zmist", {}).get("zap", ""),
         "surgical": "Yes" if phases.get("dcs") else "No",
         "care_level": care_level,
         "disposition": case.get("disposition", ""),
-        "blood_units": _blood_units(case),
-        "r2_dwell": _dwell_min(case),
+        "blood_units": _BLOOD_WBE[tier],
+        "blood_tier": {"none": "", "submassive": "Submassive", "massive": "Massive (MT)", "ultramassive": "Ultramassive (UMT)"}[tier],
+        "r2_dwell": _dwell_min(case, is_mascal_wave),
         "evac_precedence": evac.get("priority", ""),
         "onward": evac.get("transport_type", ""),
         "signs": case.get("zmist", {}).get("signs", ""),
@@ -638,6 +680,7 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
     schedule = []
     case_idx = 0
     assigned_counts = {}
+    blood_used = 0  # cumulative whole-blood-equivalent units drawn, exercise-wide
 
     for day in config.days:
         if day.cbrn:
@@ -698,11 +741,24 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                 else:
                     event = "Routine"
 
-                teo = _case_teo(case)
+                teo = _case_teo(case, is_mascal_wave)
                 # Timeline: point of injury (golden-hour anchor) back from arrival
-                # by the precedence transit bracket; Role 2 cleared = arrival + dwell.
-                poi_time = _clock(arr_total - _evac_min(teo["evac_precedence"]))
+                # by the parameter-driven transit; Role 2 cleared = arrival + dwell.
+                poi_time = _clock(arr_total - _transit_min(teo["evac_precedence"], config))
                 cleared = _clock(arr_total + teo["r2_dwell"])
+
+                # Running blood ledger: draw against LTOWB stock, then walking
+                # blood bank once the on-hand supply is spent.
+                units = teo["blood_units"]
+                blood_used += units
+                on_hand = max(0, STARTING_LTOWB_UNITS - blood_used)
+                if units == 0:
+                    blood_source = ""
+                elif blood_used <= STARTING_LTOWB_UNITS:
+                    blood_source = "LTOWB"
+                else:
+                    blood_source = "Walking Blood Bank"
+
                 schedule.append({
                     "day": day.day_number,
                     "event": event,
@@ -717,6 +773,9 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                     "brief_description": case.get("zmist", {}).get("injuries", "")[:80],
                     "evaluator": assign_evaluator(case, config.specialists, assigned_counts),
                     "case_num": f"Case {case_idx + 1}",
+                    "blood_cum": blood_used,
+                    "blood_on_hand": on_hand,
+                    "blood_source": blood_source,
                     **teo,
                 })
                 case_idx += 1
@@ -906,6 +965,12 @@ def _sheet(df: pd.DataFrame, source_cols, labels) -> pd.DataFrame:
 def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     raw = pd.DataFrame(schedule)
 
+    # Inject rows lack the numeric blood/dwell keys -> NaN floats the column and
+    # casualty counts render like "24.0". Show clean ints, blank for injects.
+    for col in ("blood_units", "blood_cum", "blood_on_hand", "r2_dwell"):
+        if col in raw.columns:
+            raw[col] = raw[col].map(lambda v: "" if (v is None or (isinstance(v, float) and pd.isna(v)) or v == "") else int(float(v)))
+
     # Sheet 1 — MSEL timeline (what EXCON runs the exercise from).
     msel = _sheet(
         raw,
@@ -916,11 +981,22 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     # Sheet 2 — T&EO / Controller detail (per-casualty, straight from the case).
     teo = _sheet(
         raw,
-        ['day', 'time', 'cleared', 'zap', 'triage_cat', 'care_level', 'surgical', 'blood_units', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
-        ['Day', 'Arrival', 'R2 Cleared', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Blood (WBE u)', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
+        ['day', 'time', 'cleared', 'zap', 'triage_cat', 'care_level', 'surgical', 'blood_units', 'blood_tier', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
+        ['Day', 'Arrival', 'R2 Cleared', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Blood (WBE u)', 'Blood Tier', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
     )
 
-    # Sheet 3 — Objectives (exercise METL / footprint / personnel, from config).
+    # Sheet 3 — Blood Ledger (chronological running consumption vs LTOWB stock).
+    if "blood_units" in raw.columns:
+        drew = raw[pd.to_numeric(raw["blood_units"], errors="coerce").fillna(0) > 0].copy()
+    else:
+        drew = raw.iloc[0:0].copy()
+    ledger = _sheet(
+        drew,
+        ['day', 'time', 'zap', 'triage_cat', 'blood_tier', 'blood_units', 'blood_cum', 'blood_on_hand', 'blood_source'],
+        ['Day', 'Arrival', 'ZAP #', 'Triage', 'Tier', 'Units', 'Cum Used', 'On Hand', 'Source'],
+    )
+
+    # Sheet 4 — Objectives (exercise METL / footprint / personnel + blood summary).
     obj_data = []
     for m in config.selected_mets:
         obj_data.append({"Category": "METL Task", "Item": m})
@@ -929,16 +1005,24 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     for k, v in (config.specialists or {}).items():
         if v:
             obj_data.append({"Category": "Personnel", "Item": f"{k}: {v}"})
-    # Aggregate blood-demand planning factor (whole-blood-equivalent) — sum of
-    # the evidence-based per-transfused figure across casualties that draw blood.
-    total_blood = int(pd.to_numeric(raw.get("blood_units"), errors="coerce").fillna(0).sum()) if "blood_units" in raw.columns else 0
-    transfused = int((pd.to_numeric(raw.get("blood_units"), errors="coerce").fillna(0) > 0).sum()) if "blood_units" in raw.columns else 0
-    obj_data.append({"Category": "Planning Factor", "Item": f"Blood demand: {total_blood} WBE units ({transfused} casualties transfused @ {BLOOD_UNITS_PER_TRANSFUSED} u avg)"})
+    if "blood_units" in raw.columns:
+        bu = pd.to_numeric(raw["blood_units"], errors="coerce").fillna(0)
+        total_blood = int(bu.sum())
+        transfused = int((bu > 0).sum())
+        tiers = raw.get("blood_tier")
+        mt = int((tiers == "Massive (MT)").sum()) if tiers is not None else 0
+        umt = int((tiers == "Ultramassive (UMT)").sum()) if tiers is not None else 0
+        deficit = max(0, total_blood - STARTING_LTOWB_UNITS)
+        obj_data.append({"Category": "Blood Supply", "Item": f"On hand at start: {STARTING_LTOWB_UNITS} u LTOWB"})
+        obj_data.append({"Category": "Blood Demand", "Item": f"{total_blood} WBE units — {transfused} transfused ({mt} MT, {umt} UMT)"})
+        obj_data.append({"Category": "Blood Status", "Item": (
+            f"Walking Blood Bank REQUIRED — {deficit} u shortfall beyond stock" if deficit > 0
+            else f"Within stock — {STARTING_LTOWB_UNITS - total_blood} u remaining")})
     objectives = pd.DataFrame(obj_data) if obj_data else pd.DataFrame({"Category": [], "Item": []})
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for name, d in (('MSEL', msel), ('T&EO', teo), ('Objectives', objectives)):
+        for name, d in (('MSEL', msel), ('T&EO', teo), ('Blood Ledger', ledger), ('Objectives', objectives)):
             d.to_excel(writer, index=False, sheet_name=name)
             _autosize(writer.sheets[name], d)
     output.seek(0)
