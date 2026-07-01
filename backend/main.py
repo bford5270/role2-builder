@@ -323,12 +323,20 @@ def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True)
     }
 
 # Document generation
+def _day_patients(day) -> int:
+    """Effective casualties for a day: routine load plus the MASCAL surge."""
+    return day.total_patients + ((day.mascal_patients or 0) if day.mascal else 0)
+
+def _day_waves(day) -> int:
+    """Effective wave count: routine waves plus one MASCAL wave when enabled."""
+    return day.total_waves + (1 if day.mascal else 0)
+
 def generate_warno(config: ExerciseConfig) -> str:
     prompt = f"""Generate USMC WARNO (5-paragraph order) for:
 Exercise: {config.exercise_name}, Duration: {config.duration} days
 Unit: {config.supported_unit}, Environment: {config.environment}, Region: {config.region}
 Threat: {config.threat_level}, Footprint: {', '.join(config.selected_footprint)}
-Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {d.total_patients} cas, {'MASCAL '+d.mascal_etiology if d.mascal else 'No MASCAL'}, {'CBRN' if d.cbrn else ''}, {'Night' if d.night_ops else 'Day'}" for d in config.days])}
+Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {_day_patients(d)} cas, {'MASCAL '+d.mascal_etiology if d.mascal else 'No MASCAL'}, {'CBRN' if d.cbrn else ''}, {'Night' if d.night_ops else 'Day'}" for d in config.days])}
 
 Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
     
@@ -336,7 +344,7 @@ Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
     return response.text
 
 def generate_annex_q(config: ExerciseConfig) -> str:
-    total_cas = sum(d.total_patients for d in config.days)
+    total_cas = sum(_day_patients(d) for d in config.days)
     prompt = f"""Generate Annex Q (Medical Services) for:
 Exercise: {config.exercise_name}, Environment: {config.environment}, Region: {config.region}
 Total Casualties: {total_cas}, Footprint: {', '.join(config.selected_footprint)}
@@ -362,7 +370,7 @@ Include: Treatment priorities, evacuation priorities, holding policy, blood prod
 
 def _road_to_war_fallback(config: "ExerciseConfig") -> str:
     """Templated Road to War video prompt used when the AI call is unavailable."""
-    total_cas = sum(d.total_patients for d in config.days)
+    total_cas = sum(_day_patients(d) for d in config.days)
     settings = "; ".join(
         f"Day {d.day_number}: {d.tactical_setting}"
         + (f" — MASCAL ({d.mascal_etiology})" if d.mascal else "")
@@ -417,7 +425,7 @@ unclassified and fictional — this is for a training exercise.
 def generate_road_to_war_prompt(config: "ExerciseConfig", annex_text: str = "") -> str:
     """Produce a ready-to-use prompt the user can hand to Claude to generate a
     'Road to War' video tailored to this exercise's Annex Q."""
-    total_cas = sum(d.total_patients for d in config.days)
+    total_cas = sum(_day_patients(d) for d in config.days)
     settings = "; ".join(
         f"Day {d.day_number}: {d.tactical_setting}"
         + (f", MASCAL: {d.mascal_etiology}" if d.mascal else "")
@@ -507,18 +515,23 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
             cbrn_time = 9 if not day.night_ops else 21
             schedule.append({"day": day.day_number, "time": f"{cbrn_time:02d}00", "nine_line_time": "N/A", "route": "N/A", "triage_cat": "N/A", "mechanism": "CBRN DRILL", "brief_description": "1-hour CBRN exercise - All clinical ops paused", "evaluator": "All Hands", "case_num": "DRILL"})
         
-        num_waves = day.total_waves
-        pts_per_wave = day.total_patients // num_waves
-        remainder = day.total_patients % num_waves
-        wave_interval = total_hours / (num_waves + 1)
-        
-        for wave in range(num_waves):
+        # Routine waves carry the base patient load; a MASCAL adds one more
+        # wave on top with its own surge count (additive, not an override).
+        base_waves = max(day.total_waves, 1)
+        pts_per_wave = day.total_patients // base_waves
+        remainder = day.total_patients % base_waves
+        wave_plan = [
+            (pts_per_wave + (1 if w < remainder else 0), False)
+            for w in range(base_waves)
+        ]
+        if day.mascal and day.mascal_patients:
+            wave_plan.append((day.mascal_patients, True))
+        wave_interval = total_hours / (len(wave_plan) + 1)
+
+        for wave, (wave_pts, is_mascal_wave) in enumerate(wave_plan):
             wave_hour = (start_hour + int(wave_interval * (wave + 1))) % 24 if day.night_ops else start_hour + int(wave_interval * (wave + 1))
-            wave_pts = pts_per_wave + (1 if wave < remainder else 0)
-            time_spread = 45 if day.mascal and wave == 0 else 60
-            if day.mascal and wave == 0 and day.mascal_patients:
-                wave_pts = day.mascal_patients
-            
+            time_spread = 45 if is_mascal_wave else 60
+
             for p in range(wave_pts):
                 if case_idx >= len(cases):
                     break
@@ -530,7 +543,7 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                     arr_hour += 1
                     arr_min -= 60
                 
-                route = random.choice(["MEDEVAC", "Ground", "Walk-in"]) if not day.mascal else random.choice(["MEDEVAC", "Ground", "Litter"])
+                route = random.choice(["MEDEVAC", "Ground", "Litter"]) if is_mascal_wave else random.choice(["MEDEVAC", "Ground", "Walk-in"])
                 if route == "Walk-in":
                     nine_time = "N/A"
                 else:
@@ -808,14 +821,22 @@ def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
     tasks = []
     env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
     for day in config.days:
-        trauma_ratio = 0.85 if day.mascal or day.tactical_setting in ["Frontal Attack", "Amphibious Assault"] else 0.50
-        num_trauma = int(day.total_patients * trauma_ratio)
+        # Routine casualty load for the day (not part of any MASCAL surge).
+        routine_ratio = 0.85 if day.tactical_setting in ["Frontal Attack", "Amphibious Assault"] else 0.50
+        num_trauma = int(day.total_patients * routine_ratio)
         num_dnbi = day.total_patients - num_trauma
         for _ in range(num_trauma):
-            inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal and day.mascal_etiology else GENERAL_TRAUMA
-            tasks.append((random.choice(inj_types), day.mascal_etiology if day.mascal else day.tactical_setting, True, bool(day.mascal)))
+            tasks.append((random.choice(GENERAL_TRAUMA), day.tactical_setting, True, False))
         for _ in range(num_dnbi):
             tasks.append((random.choice(env_dnbi), f"DNBI - {config.environment}", False, False))
+        # MASCAL surge — additive extra casualties, trauma-heavy, tagged is_mascal.
+        if day.mascal and day.mascal_patients:
+            inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal_etiology else GENERAL_TRAUMA
+            m_trauma = int(day.mascal_patients * 0.85)
+            for _ in range(m_trauma):
+                tasks.append((random.choice(inj_types), day.mascal_etiology or day.tactical_setting, True, True))
+            for _ in range(day.mascal_patients - m_trauma):
+                tasks.append((random.choice(env_dnbi), f"DNBI - {config.environment}", False, True))
     return tasks
 
 def _generate_one(task: tuple, environment: str, region: str) -> Dict:
