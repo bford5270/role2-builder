@@ -532,6 +532,51 @@ def _clock(total_minutes: int) -> str:
     total_minutes %= 24 * 60
     return f"{total_minutes // 60:02d}{total_minutes % 60:02d}"
 
+def _route_and_inbound(case: Dict, is_mascal_wave: bool) -> tuple:
+    """Decide route + whether the casualty is called in to the COC, using only
+    facts already in the case (triage, surgical need, stated transport). No dice:
+    minor DNBI (T3/T4, non-surgical) self-present as walking wounded; everyone
+    else — and all MASCAL casualties — are inbound with a COC call + 9-line."""
+    triage = case.get("triage_category", "T2")
+    surgical = case.get("phases", {}).get("dcs") is not None
+    transport = (case.get("evacuation", {}).get("transport_type") or "").strip()
+    inbound = is_mascal_wave or surgical or triage in ("T1", "T2")
+    if not inbound:
+        return "Walk-in", False
+    if transport and not any(w in transport.lower() for w in ("walk", "ambul", "self")):
+        return transport, True
+    return ("Litter" if is_mascal_wave else "MEDEVAC"), True
+
+def _case_teo(case: Dict) -> Dict:
+    """Flatten the case's own clinical detail for the T&EO sheet. Pulls straight
+    from the generated case — nothing is invented here."""
+    phases = case.get("phases", {}) or {}
+    def _collect(field):
+        out = []
+        for pk in ("dcr", "dcs", "pcc"):
+            ph = phases.get(pk)
+            if isinstance(ph, dict):
+                out += ph.get(field, []) or []
+        return out
+    care_level = "DCR" + ("+DCS" if phases.get("dcs") else "") + ("+PCC" if phases.get("pcc") else "")
+    contingencies = [c for c in _collect("contingencies") if isinstance(c, dict)]
+    evac = case.get("evacuation", {}) or {}
+    return {
+        "zap": case.get("zmist", {}).get("zap", ""),
+        "surgical": "Yes" if phases.get("dcs") else "No",
+        "care_level": care_level,
+        "evac_precedence": evac.get("priority", ""),
+        "onward": evac.get("transport_type", ""),
+        "signs": case.get("zmist", {}).get("signs", ""),
+        "handover": evac.get("handover_notes", ""),
+        "expected": " • ".join(str(a) for a in _collect("expected_actions")),
+        "contingencies": " | ".join(
+            f"IF {c.get('condition','')} → {c.get('consequence','')} → {c.get('intervention','')}"
+            for c in contingencies
+        ),
+        "debrief": " • ".join(case.get("debrief_questions", []) or []),
+    }
+
 def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
     schedule = []
     case_idx = 0
@@ -540,6 +585,8 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
     for day in config.days:
         if day.cbrn:
             schedule.append({"day": day.day_number, "event": "DRILL", "coc_hit_time": "N/A", "time": "0900", "nine_line_time": "N/A", "route": "N/A", "triage_cat": "N/A", "mechanism": "CBRN DRILL", "brief_description": "1-hour CBRN exercise - All clinical ops paused", "evaluator": "All Hands", "case_num": "DRILL"})
+        if day.detainee_ops:
+            schedule.append({"day": day.day_number, "event": "INJECT", "coc_hit_time": "N/A", "time": "1300", "nine_line_time": "N/A", "route": "N/A", "triage_cat": "N/A", "mechanism": "DETAINEE / EPW", "brief_description": "Detainee/EPW presents for care — apply detainee handling + MEDROE", "evaluator": "All Hands", "case_num": "INJECT"})
 
         # Night ops means SOME casualties arrive at night, not all care at night:
         # carve a share of the routine load into a dedicated night wave.
@@ -574,23 +621,27 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                     break
                 case = cases[case_idx]
 
-                arr_total = w["start_min"] + int((p / max(wave_pts, 1)) * time_spread)
+                # MASCAL is a compressed spike then a tail (front-loaded); routine
+                # casualties spread evenly across the wave.
+                frac = p / max(wave_pts, 1)
+                offset = int((frac ** 2) * 40) if is_mascal_wave else int(frac * 60)
+                arr_total = w["start_min"] + offset
 
-                route = random.choice(["MEDEVAC", "Ground", "Litter"]) if is_mascal_wave else random.choice(["MEDEVAC", "Ground", "Walk-in"])
-                # Walking wounded self-present from the platoon — no COC inbound
-                # call and no 9-line; everyone else is reported to the COC first.
-                if route == "Walk-in":
-                    coc_hit_time = "N/A"
-                    nine_time = "N/A"
-                else:
+                # Route + COC call are derived from the case, not rolled at random.
+                route, inbound = _route_and_inbound(case, is_mascal_wave)
+                if inbound:
                     coc_hit_time = _clock(arr_total - 45)
                     nine_time = _clock(arr_total - 30)
+                else:
+                    coc_hit_time = "N/A"
+                    nine_time = "N/A"
 
                 if is_mascal_wave:
                     event = f"MASCAL ({day.mascal_etiology})" if day.mascal_etiology else "MASCAL"
                 else:
                     event = "Routine"
 
+                teo = _case_teo(case)
                 schedule.append({
                     "day": day.day_number,
                     "event": event,
@@ -602,7 +653,8 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                     "mechanism": case.get("zmist", {}).get("mechanism", "Unknown")[:50],
                     "brief_description": case.get("zmist", {}).get("injuries", "")[:80],
                     "evaluator": assign_evaluator(case, config.specialists, assigned_counts),
-                    "case_num": f"Case {case_idx + 1}"
+                    "case_num": f"Case {case_idx + 1}",
+                    **teo,
                 })
                 case_idx += 1
 
@@ -770,24 +822,57 @@ def create_case_book(cases: List[Dict], config: ExerciseConfig) -> BytesIO:
     output.seek(0)
     return output
 
-def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
-    df = pd.DataFrame(schedule)
-    cols = ['day', 'event', 'coc_hit_time', 'nine_line_time', 'time', 'route', 'triage_cat', 'mechanism', 'brief_description', 'evaluator', 'case_num']
-    # Backward-compat: exercises generated before these columns existed won't
-    # have event/coc_hit_time keys — fill them so re-download still works.
-    for c in cols:
+def _autosize(ws, df):
+    for idx, col in enumerate(df.columns):
+        body = df[col].astype(str).map(len).max() if len(df) else 0
+        max_len = max(int(body or 0), len(str(col))) + 2
+        ws.column_dimensions[chr(65 + idx)].width = min(max_len, 60)
+
+def _sheet(df: pd.DataFrame, source_cols, labels) -> pd.DataFrame:
+    """Select/relabel columns, filling any missing ones (older stored exercises
+    predate some keys) so re-download never breaks."""
+    for c in source_cols:
         if c not in df.columns:
             df[c] = ""
-    df = df[cols]
-    df.columns = ['Day', 'Event', 'COC Hit Time', '9-Line Time', 'Arrival', 'Route', 'Triage', 'Mechanism', 'Description', 'Evaluator', 'Case #']
-    
+    out = df[source_cols].copy()
+    # Inject rows (CBRN/detainee) lack the clinical keys -> NaN; blank them.
+    out = out.fillna("")
+    out.columns = labels
+    return out
+
+def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
+    raw = pd.DataFrame(schedule)
+
+    # Sheet 1 — MSEL timeline (what EXCON runs the exercise from).
+    msel = _sheet(
+        raw,
+        ['day', 'event', 'coc_hit_time', 'nine_line_time', 'time', 'route', 'evac_precedence', 'triage_cat', 'surgical', 'zap', 'mechanism', 'brief_description', 'evaluator', 'case_num'],
+        ['Day', 'Event', 'COC Hit Time', '9-Line Time', 'Arrival', 'Route', 'Precedence', 'Triage', 'Surgical', 'ZAP #', 'Mechanism', 'Description', 'Evaluator', 'Serial'],
+    )
+
+    # Sheet 2 — T&EO / Controller detail (per-casualty, straight from the case).
+    teo = _sheet(
+        raw,
+        ['day', 'time', 'zap', 'triage_cat', 'care_level', 'surgical', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
+        ['Day', 'Arrival', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
+    )
+
+    # Sheet 3 — Objectives (exercise METL / footprint / personnel, from config).
+    obj_data = []
+    for m in config.selected_mets:
+        obj_data.append({"Category": "METL Task", "Item": m})
+    for f in config.selected_footprint:
+        obj_data.append({"Category": "Footprint", "Item": f})
+    for k, v in (config.specialists or {}).items():
+        if v:
+            obj_data.append({"Category": "Personnel", "Item": f"{k}: {v}"})
+    objectives = pd.DataFrame(obj_data) if obj_data else pd.DataFrame({"Category": [], "Item": []})
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='MSEL')
-        ws = writer.sheets['MSEL']
-        for idx, col in enumerate(df.columns):
-            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            ws.column_dimensions[chr(65 + idx)].width = min(max_len, 50)
+        for name, d in (('MSEL', msel), ('T&EO', teo), ('Objectives', objectives)):
+            d.to_excel(writer, index=False, sheet_name=name)
+            _autosize(writer.sheets[name], d)
     output.seek(0)
     return output
 
