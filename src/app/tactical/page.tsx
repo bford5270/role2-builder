@@ -176,7 +176,10 @@ export default function TacticalScenarioPage() {
     }
   };
 
-  const getTotalCasualties = () => days.reduce((sum, d) => sum + d.total_patients, 0);
+  // MASCAL is additive: it adds one wave and its patient count to the day.
+  const dayPatients = (d: DayConfig) => d.total_patients + (d.mascal && d.mascal_patients ? d.mascal_patients : 0);
+  const dayWaves = (d: DayConfig) => d.total_waves + (d.mascal ? 1 : 0);
+  const getTotalCasualties = () => days.reduce((sum, d) => sum + dayPatients(d), 0);
 
   // Shared style objects
   const labelStyle: React.CSSProperties = {
@@ -268,6 +271,9 @@ export default function TacticalScenarioPage() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                 <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16, color: 'var(--ink-1)', margin: 0, letterSpacing: '-0.01em' }}>
                   Day {day.day_number}
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 400, fontSize: 12, color: 'var(--ink-3)', marginLeft: 10 }}>
+                    {dayPatients(day)} patients · {dayWaves(day)} waves{day.mascal && day.mascal_patients ? ' (incl. MASCAL)' : ''}
+                  </span>
                 </h3>
                 {idx < days.length - 1 && (
                   <button
@@ -293,7 +299,7 @@ export default function TacticalScenarioPage() {
                 </div>
 
                 <div>
-                  <label style={labelStyle}>Total Patients</label>
+                  <label style={labelStyle}>Routine Patients</label>
                   <input
                     type="number"
                     min="1"
@@ -305,7 +311,7 @@ export default function TacticalScenarioPage() {
                 </div>
 
                 <div>
-                  <label style={labelStyle}>Waves</label>
+                  <label style={labelStyle}>Routine Waves</label>
                   <input
                     type="number"
                     min="1"
@@ -418,6 +424,11 @@ export default function TacticalScenarioPage() {
                           onChange={(e) => updateDay(idx, 'mascal_patients', parseInt(e.target.value) || null)}
                           style={{ ...inputStyle, fontSize: 12 }}
                         />
+                        {day.mascal_patients ? (
+                          <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--ink-3)', margin: 0 }}>
+                            +1 wave · +{day.mascal_patients} patients added to Day {day.day_number} (now {dayPatients(day)} across {dayWaves(day)} waves)
+                          </p>
+                        ) : null}
                       </div>
                     )}
                   </div>
