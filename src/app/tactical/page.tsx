@@ -154,6 +154,7 @@ export default function TacticalScenarioPage() {
           setProgressPct(5 + casePct);
         }
         if (job.progress.includes('documents')) setProgressPct(82);
+        if (job.progress.includes('Road to War')) setProgressPct(88);
         if (job.progress.includes('Assembling')) setProgressPct(93);
 
         if (job.status === 'complete') {
@@ -589,6 +590,7 @@ export default function TacticalScenarioPage() {
               { name: 'Annex_Q.docx' },
               { name: 'MEDROE.docx' },
               { name: 'Case_Book.docx' },
+              { name: 'Road_to_War_Prompt.docx' },
             ].map(({ name }) => (
               <div
                 key={name}
