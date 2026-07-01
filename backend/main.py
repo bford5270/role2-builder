@@ -391,21 +391,25 @@ SCENARIO FACTS (ground every scene in these):
 - Projected casualty load: {total_cas} patients across {len(config.days)} day(s)
 - Daily flashpoints: {settings}
 
+For EVERY scene below, write the complete word-for-word NARRATION (voiceover)
+to be read aloud — not a description of it — plus on-screen text and shots.
+
 STRUCTURE:
 1. COLD OPEN (0:00-0:10) — a tense, quiet establishing shot of the {config.environment}
-   theater; on-screen title card "{config.exercise_name}".
+   theater; on-screen title card "{config.exercise_name}". Include narration.
 2. GEOPOLITICAL BACKSTORY (0:10-0:40) — how tensions in {config.region or "the region"}
-   escalated toward conflict; map graphics showing forces massing.
+   escalated toward conflict; map graphics showing forces massing. Include narration.
 3. THE FLASHPOINT (0:40-1:00) — the triggering event that commits the
-   {config.supported_unit}; rising tempo, a {config.threat_level} adversary.
+   {config.supported_unit}; rising tempo, a {config.threat_level} adversary. Include narration.
 4. THE MEDICAL PICTURE (1:00-1:30) — pivot to the HSS challenge: casualty
    flow, MEDEVAC, and the Role 2 mission the audience must be ready for.
-   Draw specifics from the exercise's Annex Q (medical concept of support).
-5. CALL TO ACTION (1:30-end) — "This is the fight you are training for."
+   Draw specifics from the exercise's Annex Q (medical concept of support). Include narration.
+5. CALL TO ACTION (1:30-end) — "This is the fight you are training for." Include narration.
 
 STYLE: documentary/newsreel realism, desaturated palette, subtle map
 motion graphics, driving low-brass score, authoritative narration.
-Include narration script, on-screen text, and shot list. Keep it
+MANDATORY: deliver a full word-for-word narration script (every scene has its
+spoken lines), plus on-screen text and a shot list. Keep it
 unclassified and fictional — this is for a training exercise.
 ------------------------------------------------------------------------
 """
@@ -431,9 +435,13 @@ The prompt you write must:
   geopolitical backstory escalating to conflict, then pivots to the medical
   threat picture the trainees must be ready for.
 - Be fully self-contained and grounded in the exercise facts below.
-- Specify: a scene-by-scene structure (cold open, backstory, flashpoint,
-  medical picture, call to action), narration script, on-screen text/title
-  cards, a shot list, map-graphic beats, tone, palette, pacing, and music.
+- REQUIRE a complete, word-for-word NARRATION (voiceover) script for EVERY
+  scene — the actual lines to be read aloud, not a summary of what the
+  narration should cover. This is mandatory: no scene may be left without
+  its spoken narration text.
+- Also specify: a scene-by-scene structure (cold open, backstory, flashpoint,
+  medical picture, call to action), on-screen text/title cards, a shot list,
+  map-graphic beats, tone, palette, pacing, and music.
 - Draw the medical picture (casualty flow, MEDEVAC, Role 2 capability) from
   the Annex Q summary provided.
 - State that the content is unclassified, fictional, and for training only.
