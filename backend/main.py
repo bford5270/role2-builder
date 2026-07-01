@@ -85,6 +85,11 @@ app.add_middleware(
 
 _client = None
 
+# Gemini model id. Centralized + env-overridable so a Google model retirement
+# (e.g. gemini-2.0-flash was decommissioned with a 404) is a one-variable fix
+# on Railway rather than a code change + redeploy.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
 def get_client():
     global _client
     if _client is None:
@@ -284,7 +289,7 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
     )
 
     response = get_client().models.generate_content(
-        model="gemini-2.0-flash",
+        model=GEMINI_MODEL,
         contents=prompt,
         config={"system_instruction": CASE_SYSTEM_PROMPT, "response_mime_type": "application/json"}
     )
@@ -327,7 +332,7 @@ Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {d.total_patients}
 
 Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
     
-    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
     return response.text
 
 def generate_annex_q(config: ExerciseConfig) -> str:
@@ -339,7 +344,7 @@ Specialists: {json.dumps(config.specialists)}
 
 Include: HSS concept, MTFs, MEDEVAC, Class VIII, blood support, dental, combat stress, PVNTMED"""
     
-    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
     return response.text
 
 def generate_medroe(config: ExerciseConfig) -> str:
@@ -352,7 +357,7 @@ CBRN: {has_cbrn}, Detainee Ops: {has_detainee}
 
 Include: Treatment priorities, evacuation priorities, holding policy, blood products, documentation, MASCAL procedures"""
     
-    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
     return response.text
 
 def _road_to_war_fallback(config: "ExerciseConfig") -> str:
@@ -449,7 +454,7 @@ ANNEX Q (MEDICAL CONCEPT OF SUPPORT) SUMMARY:
 Now write the Road to War video-generation prompt."""
     try:
         response = get_client().models.generate_content(
-            model="gemini-2.0-flash", contents=prompt
+            model=GEMINI_MODEL, contents=prompt
         )
         text = _response_text(response)
         if text:
@@ -769,12 +774,12 @@ Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
                 ],
             )
             response = get_client().models.generate_content(
-                model="gemini-2.0-flash", contents=prompt, config=gen_config
+                model=GEMINI_MODEL, contents=prompt, config=gen_config
             )
         except Exception:
             # Older/newer SDKs may not accept the config shape above — retry plain.
             response = get_client().models.generate_content(
-                model="gemini-2.0-flash", contents=prompt
+                model=GEMINI_MODEL, contents=prompt
             )
         name = _response_text(response).replace('"', '').replace("'", "")
         # Models sometimes return a short explanation before the name.
