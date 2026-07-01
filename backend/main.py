@@ -254,6 +254,12 @@ Generate a detailed simulation case with:
 8. Debrief Questions (4-6 thought-provoking)
 
 If DCS not needed, set dcs to null.
+Set triage_category to "Expectant" only for injuries not survivable with the
+resources at hand; use it sparingly. Set disposition to the realistic outcome
+after Role 2 care for THIS casualty (RTD for minor, Evac to Role 3 for surgical/
+serious, Hold at Role 2 for short observation, Died of Wounds or Expectant for
+non-survivable). Do NOT include blood unit counts — those are computed by a
+planning factor, not per case.
 
 JSON STRUCTURE:
 {
@@ -262,7 +268,8 @@ JSON STRUCTURE:
   "zmist": {"zap": "USE EXACT VALUE PROVIDED IN PROMPT", "mechanism": "String", "injuries": "String", "signs": "String", "treatment": "String"},
   "nine_line": {"line1_location": "String", "line2_freq": "String", "line3_patients_precedence": "String", "line4_equipment": "String", "line5_patients_type": "String", "line6_security": "String", "line7_marking": "String", "line8_nationality": "String", "line9_nbc_terrain": "String"},
   "patient_data": {"demographics": "String", "history": "String", "allergies": "String"},
-  "triage_category": "T1/T2/T3/T4",
+  "triage_category": "T1/T2/T3/T4/Expectant",
+  "disposition": "One of: RTD | Evac to Role 3 | Hold at Role 2 | Died of Wounds | Expectant",
   "phases": {
     "dcr": {"title": "Damage Control Resuscitation", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [{"time": "String", "hr": "String", "bp": "String", "rr": "String", "spo2": "String", "gcs": "String"}], "contingencies": [{"condition": "String", "consequence": "String", "intervention": "String"}]},
     "dcs": null or {"title": "Damage Control Surgery", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [...], "contingencies": [...]},
@@ -316,6 +323,7 @@ def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True)
         "nine_line": {"line1_location": "Grid TBD", "line2_freq": "Pri: 123.45", "line3_patients_precedence": "1 Alpha" if is_trauma else "1 Charlie", "line4_equipment": "None", "line5_patients_type": "1 Litter" if is_trauma else "1 Ambulatory", "line6_security": "Secure", "line7_marking": "VS-17", "line8_nationality": "US Military", "line9_nbc_terrain": "None"},
         "patient_data": {"demographics": f"{random.randint(19, 35)} yo male Marine", "history": "No PMH", "allergies": "NKDA"},
         "triage_category": "T2" if is_trauma else "T3",
+        "disposition": "Evac to Role 3" if is_trauma else "RTD",
         "phases": {"dcr": {"title": "Damage Control Resuscitation", "narrative": "Patient arrives...", "expected_actions": ["Primary survey", "IV access"], "vitals_trend": [{"time": "0:00", "hr": "110", "bp": "100/70", "rr": "20", "spo2": "95%", "gcs": "14"}], "contingencies": [{"condition": "BP <90", "consequence": "Shock", "intervention": "Blood products"}]}, "dcs": None, "pcc": {"title": "Prolonged Casualty Care", "narrative": "Post-resuscitation...", "expected_actions": ["Monitor", "Pain management"], "vitals_trend": [], "contingencies": []}},
         "labs": {"hgb": "11.2", "ph": "7.32", "lactate": "3.1", "base_excess": "-4", "inr": "1.1"},
         "evacuation": {"transport_type": "MEDEVAC", "priority": "Priority" if is_trauma else "Routine", "considerations": "Monitor vitals", "handover_notes": f"Stable s/p {case_type}"},
@@ -532,6 +540,52 @@ def _clock(total_minutes: int) -> str:
     total_minutes %= 24 * 60
     return f"{total_minutes // 60:02d}{total_minutes % 60:02d}"
 
+# Evidence-based blood planning. Casualties who require transfusion consume, on
+# average, ~6 units whole-blood-equivalent — a mean, not a per-case guess.
+# Sources: "The thin red line: Blood planning factors and the enduring need for
+# a robust military blood system to support combat operations," J Trauma Acute
+# Care Surg 2024 (PMID 38996415), which frames blood-per-casualty planning
+# factors; combat DCR/massive-transfusion literature (massive transfusion =
+# >=10 RBC units/24h). Only clinically hemorrhaging casualties draw blood.
+BLOOD_UNITS_PER_TRANSFUSED = 6
+_HEMORRHAGE_KW = ("hemorrhage", "haemorrhage", "amputation", "gsw", "gunshot",
+                  "blast", "exsanguination", "massive", "junctional", "vascular",
+                  "penetrating", "laceration", "evisceration")
+
+def _requires_blood(case: Dict) -> bool:
+    """Derived from the case, not rolled: a casualty needs blood if it goes to
+    surgery, is T1, or its injuries/treatment describe hemorrhage."""
+    if case.get("phases", {}).get("dcs") is not None:
+        return True
+    if case.get("triage_category") == "T1":
+        return True
+    z = case.get("zmist", {})
+    text = f"{z.get('injuries','')} {z.get('treatment','')} {z.get('mechanism','')}".lower()
+    return any(k in text for k in _HEMORRHAGE_KW)
+
+def _blood_units(case: Dict) -> int:
+    """Whole-blood-equivalent units for this casualty: the evidence-based mean
+    if transfusion is indicated, otherwise zero."""
+    return BLOOD_UNITS_PER_TRANSFUSED if _requires_blood(case) else 0
+
+def _evac_min(precedence: str) -> int:
+    """POI->Role 2 transit planning bracket by evacuation precedence."""
+    p = (precedence or "").lower()
+    if "urgent" in p:
+        return 30
+    if "priority" in p:
+        return 60
+    return 120  # routine / convenience
+
+def _dwell_min(case: Dict) -> int:
+    """Role 2 treatment/OR occupancy bracket, used for the saturation picture."""
+    phases = case.get("phases", {}) or {}
+    if phases.get("dcs"):
+        return 150  # surgical: OR + immediate post-op hold
+    if phases.get("pcc"):
+        return 90   # resus + prolonged care hold
+    return 45
+
 def _route_and_inbound(case: Dict, is_mascal_wave: bool) -> tuple:
     """Decide route + whether the casualty is called in to the COC, using only
     facts already in the case (triage, surgical need, stated transport). No dice:
@@ -565,6 +619,9 @@ def _case_teo(case: Dict) -> Dict:
         "zap": case.get("zmist", {}).get("zap", ""),
         "surgical": "Yes" if phases.get("dcs") else "No",
         "care_level": care_level,
+        "disposition": case.get("disposition", ""),
+        "blood_units": _blood_units(case),
+        "r2_dwell": _dwell_min(case),
         "evac_precedence": evac.get("priority", ""),
         "onward": evac.get("transport_type", ""),
         "signs": case.get("zmist", {}).get("signs", ""),
@@ -642,9 +699,15 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                     event = "Routine"
 
                 teo = _case_teo(case)
+                # Timeline: point of injury (golden-hour anchor) back from arrival
+                # by the precedence transit bracket; Role 2 cleared = arrival + dwell.
+                poi_time = _clock(arr_total - _evac_min(teo["evac_precedence"]))
+                cleared = _clock(arr_total + teo["r2_dwell"])
                 schedule.append({
                     "day": day.day_number,
                     "event": event,
+                    "poi_time": poi_time,
+                    "cleared": cleared,
                     "coc_hit_time": coc_hit_time,
                     "time": _clock(arr_total),
                     "nine_line_time": nine_time,
@@ -846,15 +909,15 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     # Sheet 1 — MSEL timeline (what EXCON runs the exercise from).
     msel = _sheet(
         raw,
-        ['day', 'event', 'coc_hit_time', 'nine_line_time', 'time', 'route', 'evac_precedence', 'triage_cat', 'surgical', 'zap', 'mechanism', 'brief_description', 'evaluator', 'case_num'],
-        ['Day', 'Event', 'COC Hit Time', '9-Line Time', 'Arrival', 'Route', 'Precedence', 'Triage', 'Surgical', 'ZAP #', 'Mechanism', 'Description', 'Evaluator', 'Serial'],
+        ['day', 'event', 'poi_time', 'coc_hit_time', 'nine_line_time', 'time', 'route', 'evac_precedence', 'triage_cat', 'surgical', 'disposition', 'zap', 'mechanism', 'brief_description', 'evaluator', 'case_num'],
+        ['Day', 'Event', 'POI Time', 'COC Hit Time', '9-Line Time', 'Arrival', 'Route', 'Precedence', 'Triage', 'Surgical', 'Disposition', 'ZAP #', 'Mechanism', 'Description', 'Evaluator', 'Serial'],
     )
 
     # Sheet 2 — T&EO / Controller detail (per-casualty, straight from the case).
     teo = _sheet(
         raw,
-        ['day', 'time', 'zap', 'triage_cat', 'care_level', 'surgical', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
-        ['Day', 'Arrival', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
+        ['day', 'time', 'cleared', 'zap', 'triage_cat', 'care_level', 'surgical', 'blood_units', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
+        ['Day', 'Arrival', 'R2 Cleared', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Blood (WBE u)', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
     )
 
     # Sheet 3 — Objectives (exercise METL / footprint / personnel, from config).
@@ -866,6 +929,11 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     for k, v in (config.specialists or {}).items():
         if v:
             obj_data.append({"Category": "Personnel", "Item": f"{k}: {v}"})
+    # Aggregate blood-demand planning factor (whole-blood-equivalent) — sum of
+    # the evidence-based per-transfused figure across casualties that draw blood.
+    total_blood = int(pd.to_numeric(raw.get("blood_units"), errors="coerce").fillna(0).sum()) if "blood_units" in raw.columns else 0
+    transfused = int((pd.to_numeric(raw.get("blood_units"), errors="coerce").fillna(0) > 0).sum()) if "blood_units" in raw.columns else 0
+    obj_data.append({"Category": "Planning Factor", "Item": f"Blood demand: {total_blood} WBE units ({transfused} casualties transfused @ {BLOOD_UNITS_PER_TRANSFUSED} u avg)"})
     objectives = pd.DataFrame(obj_data) if obj_data else pd.DataFrame({"Category": [], "Item": []})
 
     output = BytesIO()
