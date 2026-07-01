@@ -379,15 +379,16 @@ def _road_to_war_fallback(config: "ExerciseConfig") -> str:
     return f"""ROAD TO WAR — VIDEO GENERATION PROMPT
 Exercise: {config.exercise_name}
 
-Paste the block below into Claude to generate a cinematic "Road to War"
+Paste the block below into Claude to generate an animated "Road to War"
 scenario-setting video for this exercise. Edit any bracketed notes first.
 
 ------------------------------------------------------------------------
-You are a military media producer. Create a 90-120 second cinematic
-"Road to War" video that sets the strategic scene for the training
-exercise "{config.exercise_name}". The video briefs participants on the
-geopolitical backstory that leads up to the medical/HSS mission they are
-about to rehearse.
+Build a single, self-contained ANIMATED HTML file (inline CSS + JS, no external
+files or network requests) that plays as a 90-120 second cinematic "Road to War"
+video for the training exercise "{config.exercise_name}". It briefs participants
+on the geopolitical backstory leading up to the medical/HSS mission they are
+about to rehearse. This is animated HTML — NOT footage from a video-generation
+model and no stock video.
 
 SCENARIO FACTS (ground every scene in these):
 - Operation: {config.exercise_name}
@@ -399,25 +400,35 @@ SCENARIO FACTS (ground every scene in these):
 - Projected casualty load: {total_cas} patients across {len(config.days)} day(s)
 - Daily flashpoints: {settings}
 
-For EVERY scene below, write the complete word-for-word NARRATION (voiceover)
-to be read aloud — not a description of it — plus on-screen text and shots.
+HOW TO BUILD IT:
+- Animate with CSS keyframes/transitions and animated inline SVG: kinetic
+  typography, animated title cards, an animated map (forces massing, sea/air
+  lanes closing, weapon-engagement rings), and simple motion graphics.
+- VOICEOVER: use the browser Web Speech API (window.speechSynthesis) to read the
+  narration aloud, timing the on-screen scenes to the speech. Include a
+  full-screen "Begin brief" start button (browsers block autoplay audio) that
+  starts both the voiceover and the animation. Show the narration as on-screen
+  captions too.
+- Desaturated cinematic palette; per-scene durations summing to ~90-120s.
+- Optional background music only via the Web Audio API (no external audio).
+
+For EVERY scene, provide the complete word-for-word NARRATION (voiceover) the
+speechSynthesis engine will read — the actual lines, not a description.
 
 STRUCTURE:
-1. COLD OPEN (0:00-0:10) — a tense, quiet establishing shot of the {config.environment}
-   theater; on-screen title card "{config.exercise_name}". Include narration.
-2. GEOPOLITICAL BACKSTORY (0:10-0:40) — how tensions in {config.region or "the region"}
-   escalated toward conflict; map graphics showing forces massing. Include narration.
-3. THE FLASHPOINT (0:40-1:00) — the triggering event that commits the
+1. COLD OPEN (~0:00-0:10) — a tense, quiet establishing beat of the {config.environment}
+   theater; animated title card "{config.exercise_name}". Include narration.
+2. GEOPOLITICAL BACKSTORY (~0:10-0:40) — how tensions in {config.region or "the region"}
+   escalated toward conflict; animated map showing forces massing. Include narration.
+3. THE FLASHPOINT (~0:40-1:00) — the triggering event that commits the
    {config.supported_unit}; rising tempo, a {config.threat_level} adversary. Include narration.
-4. THE MEDICAL PICTURE (1:00-1:30) — pivot to the HSS challenge: casualty
+4. THE MEDICAL PICTURE (~1:00-1:30) — pivot to the HSS challenge: casualty
    flow, MEDEVAC, and the Role 2 mission the audience must be ready for.
    Draw specifics from the exercise's Annex Q (medical concept of support). Include narration.
-5. CALL TO ACTION (1:30-end) — "This is the fight you are training for." Include narration.
+5. CALL TO ACTION (~1:30-end) — "This is the fight you are training for." Include narration.
 
-STYLE: documentary/newsreel realism, desaturated palette, subtle map
-motion graphics, driving low-brass score, authoritative narration.
-MANDATORY: deliver a full word-for-word narration script (every scene has its
-spoken lines), plus on-screen text and a shot list. Keep it
+MANDATORY: one self-contained animated HTML file with a spoken voiceover and a
+full word-for-word narration script (every scene has its spoken lines). Keep it
 unclassified and fictional — this is for a training exercise.
 ------------------------------------------------------------------------
 """
@@ -434,22 +445,35 @@ def generate_road_to_war_prompt(config: "ExerciseConfig", annex_text: str = "") 
     )
     annex_excerpt = (annex_text or "")[:2500]
     prompt = f"""You are writing a prompt that another person will paste into Claude to
-generate a cinematic 90-120 second "Road to War" scenario-setting video for a
-USMC medical (HSS) training exercise. Write ONLY that prompt — do not write the
-video itself, and do not add commentary before or after.
+generate a 90-120 second "Road to War" scenario-setting video for a USMC medical
+(HSS) training exercise. The video will be produced BY Claude as a single,
+self-contained ANIMATED HTML file with a spoken voiceover — NOT footage from a
+video-generation model. Write ONLY that prompt — do not write the video/HTML
+itself, and do not add commentary before or after.
 
 The prompt you write must:
-- Instruct Claude to produce a Road to War video that establishes the
-  geopolitical backstory escalating to conflict, then pivots to the medical
-  threat picture the trainees must be ready for.
-- Be fully self-contained and grounded in the exercise facts below.
+- Instruct Claude to output ONE self-contained .html file (inline CSS + JS, no
+  external files, no network/CDN requests) that plays as an animated Road to War
+  video: it establishes the geopolitical backstory escalating to conflict, then
+  pivots to the medical threat picture the trainees must be ready for.
+- Require the animation to be done with CSS keyframes/transitions and animated
+  inline SVG — kinetic typography, animated title cards, an animated map (forces
+  massing, sea/air lanes, weapon-engagement rings), and simple motion graphics.
+  There is NO live-action footage; do not reference stock video or a video model.
+- Require a SPOKEN VOICEOVER using the browser Web Speech API
+  (window.speechSynthesis) that reads the narration aloud, advancing/timing the
+  on-screen scenes to match the speech. Because browsers block autoplay audio,
+  require a full-screen "Begin brief" start button that kicks off both the
+  voiceover and the animation on click. Also render the narration as on-screen
+  captions/subtitles for accessibility.
 - REQUIRE a complete, word-for-word NARRATION (voiceover) script for EVERY
-  scene — the actual lines to be read aloud, not a summary of what the
-  narration should cover. This is mandatory: no scene may be left without
-  its spoken narration text.
-- Also specify: a scene-by-scene structure (cold open, backstory, flashpoint,
-  medical picture, call to action), on-screen text/title cards, a shot list,
-  map-graphic beats, tone, palette, pacing, and music.
+  scene — the actual lines the speechSynthesis engine will read, not a summary.
+  This is mandatory: no scene may be left without its spoken narration text.
+- Also specify: the scene-by-scene structure (cold open, backstory, flashpoint,
+  medical picture, call to action) with per-scene durations that sum to
+  ~90-120s, on-screen text/title cards, the desaturated cinematic palette, and
+  pacing. (Background music is optional and, if used, must be generated in-page
+  via the Web Audio API — no external audio files.)
 - Draw the medical picture (casualty flow, MEDEVAC, Role 2 capability) from
   the Annex Q summary provided.
 - State that the content is unclassified, fictional, and for training only.
