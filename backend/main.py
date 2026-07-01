@@ -527,61 +527,75 @@ def assign_evaluator(case: Dict, specialists: Dict[str, int], assigned_counts: D
             return f"{abbrev.get(spec, spec)} {num}"
     return "Unassigned"
 
+def _clock(total_minutes: int) -> str:
+    """Minutes-from-midnight -> HHMM, wrapping across midnight."""
+    total_minutes %= 24 * 60
+    return f"{total_minutes // 60:02d}{total_minutes % 60:02d}"
+
 def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
     schedule = []
     case_idx = 0
     assigned_counts = {}
-    
-    for day in config.days:
-        start_hour, total_hours = (19, 12) if day.night_ops else (7, 12)
-        
-        if day.cbrn:
-            cbrn_time = 9 if not day.night_ops else 21
-            schedule.append({"day": day.day_number, "time": f"{cbrn_time:02d}00", "nine_line_time": "N/A", "route": "N/A", "triage_cat": "N/A", "mechanism": "CBRN DRILL", "brief_description": "1-hour CBRN exercise - All clinical ops paused", "evaluator": "All Hands", "case_num": "DRILL"})
-        
-        # Routine waves carry the base patient load; a MASCAL adds one more
-        # wave on top with its own surge count (additive, not an override).
-        base_waves = max(day.total_waves, 1)
-        pts_per_wave = day.total_patients // base_waves
-        remainder = day.total_patients % base_waves
-        wave_plan = [
-            (pts_per_wave + (1 if w < remainder else 0), False)
-            for w in range(base_waves)
-        ]
-        if day.mascal and day.mascal_patients:
-            wave_plan.append((day.mascal_patients, True))
-        wave_interval = total_hours / (len(wave_plan) + 1)
 
-        for wave, (wave_pts, is_mascal_wave) in enumerate(wave_plan):
-            wave_hour = (start_hour + int(wave_interval * (wave + 1))) % 24 if day.night_ops else start_hour + int(wave_interval * (wave + 1))
+    for day in config.days:
+        if day.cbrn:
+            schedule.append({"day": day.day_number, "event": "DRILL", "coc_hit_time": "N/A", "time": "0900", "nine_line_time": "N/A", "route": "N/A", "triage_cat": "N/A", "mechanism": "CBRN DRILL", "brief_description": "1-hour CBRN exercise - All clinical ops paused", "evaluator": "All Hands", "case_num": "DRILL"})
+
+        # Night ops means SOME casualties arrive at night, not all care at night:
+        # carve a share of the routine load into a dedicated night wave.
+        night_pts = min(max(1, round(day.total_patients * 0.35)), day.total_patients) if day.night_ops else 0
+        day_pts = day.total_patients - night_pts
+
+        # Routine day waves carry the daytime load; a MASCAL adds one more wave
+        # on top with its own surge count (additive, not an override).
+        base_waves = max(day.total_waves, 1)
+        pts_per_wave = day_pts // base_waves
+        remainder = day_pts % base_waves
+        day_waves = [{"pts": pts_per_wave + (1 if w < remainder else 0), "mascal": False}
+                     for w in range(base_waves)]
+        if day.mascal and day.mascal_patients:
+            day_waves.append({"pts": day.mascal_patients, "mascal": True})
+        night_waves = [{"pts": night_pts, "mascal": False}] if night_pts else []
+
+        # Day window 0700-1900 (12h); night window 2000-0200 (6h).
+        for group, start_min, span_min in ((day_waves, 7 * 60, 12 * 60), (night_waves, 20 * 60, 6 * 60)):
+            interval = span_min / (len(group) + 1) if group else 0
+            for k, w in enumerate(group):
+                w["start_min"] = start_min + int(interval * (k + 1))
+
+        # Emit chronologically: day waves, then the night wave.
+        for w in day_waves + night_waves:
+            wave_pts = w["pts"]
+            is_mascal_wave = w["mascal"]
             time_spread = 45 if is_mascal_wave else 60
 
             for p in range(wave_pts):
                 if case_idx >= len(cases):
                     break
                 case = cases[case_idx]
-                
-                min_offset = int((p / max(wave_pts, 1)) * time_spread)
-                arr_hour, arr_min = wave_hour, min_offset
-                if arr_min >= 60:
-                    arr_hour += 1
-                    arr_min -= 60
-                
+
+                arr_total = w["start_min"] + int((p / max(wave_pts, 1)) * time_spread)
+
                 route = random.choice(["MEDEVAC", "Ground", "Litter"]) if is_mascal_wave else random.choice(["MEDEVAC", "Ground", "Walk-in"])
+                # Walking wounded self-present from the platoon — no COC inbound
+                # call and no 9-line; everyone else is reported to the COC first.
                 if route == "Walk-in":
+                    coc_hit_time = "N/A"
                     nine_time = "N/A"
                 else:
-                    nine_hr, nine_min = arr_hour, arr_min - 30
-                    if nine_min < 0:
-                        nine_hr -= 1
-                        nine_min += 60
-                    if nine_hr < 0:
-                        nine_hr += 24
-                    nine_time = f"{nine_hr:02d}{nine_min:02d}"
-                
+                    coc_hit_time = _clock(arr_total - 45)
+                    nine_time = _clock(arr_total - 30)
+
+                if is_mascal_wave:
+                    event = f"MASCAL ({day.mascal_etiology})" if day.mascal_etiology else "MASCAL"
+                else:
+                    event = "Routine"
+
                 schedule.append({
                     "day": day.day_number,
-                    "time": f"{arr_hour:02d}{arr_min:02d}",
+                    "event": event,
+                    "coc_hit_time": coc_hit_time,
+                    "time": _clock(arr_total),
                     "nine_line_time": nine_time,
                     "route": route,
                     "triage_cat": case.get("triage_category", "T2"),
@@ -591,7 +605,7 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                     "case_num": f"Case {case_idx + 1}"
                 })
                 case_idx += 1
-    
+
     return schedule
 
 # Document creation
@@ -758,8 +772,14 @@ def create_case_book(cases: List[Dict], config: ExerciseConfig) -> BytesIO:
 
 def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     df = pd.DataFrame(schedule)
-    df = df[['day', 'time', 'nine_line_time', 'route', 'triage_cat', 'mechanism', 'brief_description', 'evaluator', 'case_num']]
-    df.columns = ['Day', 'Time', '9-Line Time', 'Route', 'Triage', 'Mechanism', 'Description', 'Evaluator', 'Case #']
+    cols = ['day', 'event', 'coc_hit_time', 'nine_line_time', 'time', 'route', 'triage_cat', 'mechanism', 'brief_description', 'evaluator', 'case_num']
+    # Backward-compat: exercises generated before these columns existed won't
+    # have event/coc_hit_time keys — fill them so re-download still works.
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[cols]
+    df.columns = ['Day', 'Event', 'COC Hit Time', '9-Line Time', 'Arrival', 'Route', 'Triage', 'Mechanism', 'Description', 'Evaluator', 'Case #']
     
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
