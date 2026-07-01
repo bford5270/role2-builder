@@ -84,6 +84,51 @@ def get_client():
         _client = genai.Client(api_key=key)
     return _client
 
+def _response_text(response) -> str:
+    """Safely pull text out of a Gemini response.
+
+    response.text raises when the model returns no usable candidate (e.g. the
+    prompt tripped a safety filter). Fall back to walking the candidate parts,
+    and return "" rather than raising so callers can degrade gracefully.
+    """
+    try:
+        text = response.text
+        if text:
+            return text.strip()
+    except Exception:
+        pass
+    try:
+        parts = []
+        for cand in getattr(response, "candidates", None) or []:
+            content = getattr(cand, "content", None)
+            for part in (getattr(content, "parts", None) or []):
+                if getattr(part, "text", None):
+                    parts.append(part.text)
+        return "".join(parts).strip()
+    except Exception:
+        return ""
+
+# Curated pools mirror the /generate-name prompt so the offline fallback stays
+# on-brand. None of these appear in the prompt's banned-word list.
+_NAME_DESCRIPTORS = [
+    "Silent", "Relentless", "Fractured", "Bleeding", "Stalking", "Burning",
+    "Severed", "Hollow", "Bitter", "Fading", "Broken", "Restless", "Savage",
+    "Grim", "Fallen", "Rising", "Distant", "Shattered", "Quiet", "Vigilant",
+]
+_NAME_NOUNS_LAND = [
+    "Jackal", "Wolverine", "Lynx", "Mantis", "Fury", "Wrath", "Valor",
+    "Resolve", "Defiance", "Reckoning", "Rampart", "Bastion", "Crucible",
+    "Gauntlet", "Threshold", "Salient", "Bulwark", "Sentinel", "Vanguard",
+]
+_NAME_NOUNS_MARITIME = ["Mako", "Condor", "Viper", "Barracuda", "Kraken", "Tempest"]
+
+def _local_exercise_name(region: str = "") -> str:
+    """Deterministic-random offline name so the endpoint never fails to fetch."""
+    nouns = list(_NAME_NOUNS_LAND)
+    if any(w in (region or "").lower() for w in ("marit", "pacific", "naval", "littoral", "coast", "sea")):
+        nouns = nouns + _NAME_NOUNS_MARITIME
+    return f"Operation {random.choice(_NAME_DESCRIPTORS)} {random.choice(nouns)}"
+
 # Short-lived store for completed zip packages keyed by download token
 _packages: Dict[str, bytes] = {}
 
@@ -587,8 +632,44 @@ Structure:
 Banned words: Iron, Steel, Crimson, Eagle, Thunder, Guardian, Shield, Ghost, Phantom, Storm, Black, Red, Blue, Dragon, Tiger, Wolf, Hawk, Viper (if region is not maritime)
 
 Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
-    response = get_client().models.generate_content(model="gemini-2.0-flash", contents=prompt)
-    name = response.text.strip().replace('"', '').replace("'", "")
+    # The violent descriptors in this prompt can trip Gemini's safety filters,
+    # which makes response.text raise and the endpoint 500 ("not fetching").
+    # Relax the filters where allowed, extract text safely, and fall back to a
+    # curated local name so the button always returns a usable result.
+    name = ""
+    try:
+        try:
+            from google.genai import types
+            gen_config = types.GenerateContentConfig(
+                temperature=1.3,
+                safety_settings=[
+                    types.SafetySetting(category=c, threshold="BLOCK_NONE")
+                    for c in (
+                        "HARM_CATEGORY_HARASSMENT",
+                        "HARM_CATEGORY_HATE_SPEECH",
+                        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    )
+                ],
+            )
+            response = get_client().models.generate_content(
+                model="gemini-2.0-flash", contents=prompt, config=gen_config
+            )
+        except Exception:
+            # Older/newer SDKs may not accept the config shape above — retry plain.
+            response = get_client().models.generate_content(
+                model="gemini-2.0-flash", contents=prompt
+            )
+        name = _response_text(response).replace('"', '').replace("'", "")
+        # Models sometimes return a short explanation before the name.
+        name = name.splitlines()[0].strip() if name else ""
+    except HTTPException:
+        raise  # e.g. GEMINI_API_KEY missing — surface it as-is
+    except Exception as e:
+        print(f"WARNING: generate-name AI call failed, using local fallback: {e}")
+
+    if not name:
+        name = _local_exercise_name(region)
     if not name.startswith("Operation"):
         name = f"Operation {name}"
     return {"name": name}
