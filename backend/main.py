@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import FastAPI, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -144,25 +144,51 @@ def _local_exercise_name(region: str = "") -> str:
         nouns = nouns + _NAME_NOUNS_MARITIME
     return f"Operation {random.choice(_NAME_DESCRIPTORS)} {random.choice(nouns)}"
 
-# Short-lived store for completed zip packages keyed by download token
-_packages: Dict[str, bytes] = {}
+# Short-lived store for completed zip packages keyed by download token.
+# Entries carry a timestamp so stale packages (never downloaded) get purged
+# instead of accumulating for the life of the process.
+_packages: Dict[str, Dict[str, Any]] = {}
+_PACKAGE_TTL = timedelta(hours=6)
+_JOB_TTL = timedelta(hours=24)
+
+def _purge_stale_stores():
+    now = datetime.utcnow()
+    for tok in [t for t, p in _packages.items() if now - p["ts"] > _PACKAGE_TTL]:
+        _packages.pop(tok, None)
+    for jid in [j for j, v in _jobs.items()
+                if v.get("ts") and now - v["ts"] > _JOB_TTL]:
+        _jobs.pop(jid, None)
+
+# ZAP numbers key every sheet in the package (MSEL, T&EO, Blood Ledger, Case
+# Book) — independent random draws collide surprisingly often at exercise
+# scale, so allocate them from a process-wide set instead.
+_zap_lock = threading.Lock()
+_used_zaps: set = set()
+
+def _new_zap() -> str:
+    with _zap_lock:
+        while True:
+            z = str(random.randint(10000, 99999))
+            if z not in _used_zaps:
+                _used_zaps.add(z)
+                return z
 
 # Pydantic Models
 class DayConfig(BaseModel):
-    day_number: int
+    day_number: int = Field(ge=1)
     tactical_setting: str
-    total_patients: int
-    total_waves: int
+    total_patients: int = Field(ge=0, le=60)
+    total_waves: int = Field(ge=1, le=12)
     night_ops: bool = False
     mascal: bool = False
     mascal_etiology: Optional[str] = None
-    mascal_patients: Optional[int] = None
+    mascal_patients: Optional[int] = Field(default=None, ge=1, le=30)
     cbrn: bool = False
     detainee_ops: bool = False
 
 class ExerciseConfig(BaseModel):
     exercise_name: str
-    duration: int
+    duration: int = Field(ge=1, le=30)
     supported_unit: str
     environment: str
     threat_level: str
@@ -194,6 +220,25 @@ TRAUMA_BY_ETIOLOGY = {
     "Burns/Fire": ["Severe thermal burns (>30% TBSA)", "Inhalation injury", "CO poisoning", "Facial burns with airway compromise"],
     "Drowning (Amphibious)": ["Near-drowning with aspiration", "Hypothermia with near-drowning", "Trauma from vessel impact"],
     "VBIED": ["Multi-system blast trauma", "Severe burns with TBI", "Traumatic amputation bilateral", "Penetrating torso wounds"],
+    "UAS/Drone Strike": ["Multiple small deep fragment wounds to head/neck and posterior torso", "Traumatic below-knee amputation from FPV drone strike", "Junctional hemorrhage from drone-dropped munition fragments", "Blast TBI with penetrating facial fragments", "Extremity fragment wounds with prolonged tourniquet time and wound contamination"],
+}
+
+# Mechanism-specific context injected into the case-generation prompt so the
+# model grounds the scenario in observed casualty patterns for that etiology.
+MECHANISM_CONTEXT = {
+    "UAS/Drone Strike": (
+        "UAS CASUALTY PATTERN (per Russo-Ukrainian war experience, where UAS became "
+        "the leading cause of combat casualties): strikes are FPV attack drones with "
+        "RPG-type shaped-charge warheads or drone-dropped VOG-type grenades detonating "
+        "overhead. Expect multiple small, deep penetrating fragments concentrated in "
+        "the head/neck, posterior torso, and extremities (body armor spares the anterior "
+        "torso; overhead cover is often absent); traumatic amputations from direct FPV "
+        "hits; and combined blast TBI. Drones interdict evacuation routes and re-attack "
+        "casualty collection points ('double-tap'), so casualties frequently arrive at "
+        "Role 2 hours late after prolonged field care — build in prolonged tourniquet "
+        "times with reperfusion/conversion decisions, wound contamination with early "
+        "infection risk, hypothermia, and under-resuscitation on arrival."
+    ),
 }
 
 GENERAL_TRAUMA = [
@@ -254,6 +299,20 @@ Generate a detailed simulation case with:
 8. Debrief Questions (4-6 thought-provoking)
 
 If DCS not needed, set dcs to null.
+
+CLINICAL FIDELITY REQUIREMENTS:
+- Vitals trends must follow the physiology of the injuries and respond to the
+  treatments listed in the same phase (e.g., hemorrhage: rising HR and
+  narrowing pulse pressure before BP falls, improvement after blood products;
+  severe TBI: consider Cushing response; airway compromise: falling SpO2
+  before bradycardia). Every timestamp must be explainable by the clinical
+  course — no arbitrary numbers.
+- Triage uses NATO categories: T1 Immediate, T2 Delayed, T3 Minimal, and
+  Expectant (the T4 equivalent). Output exactly one of T1/T2/T3/Expectant.
+- Vary patient demographics realistically across cases — age, sex, and
+  population (US forces, partner forces, host-nation civilians where the
+  scenario supports it). Do not default every patient to a young male Marine.
+
 Set triage_category to "Expectant" only for injuries not survivable with the
 resources at hand; use it sparingly. Set disposition to the realistic outcome
 after Role 2 care for THIS casualty (RTD for minor, Evac to Role 3 for surgical/
@@ -268,7 +327,7 @@ JSON STRUCTURE:
   "zmist": {"zap": "USE EXACT VALUE PROVIDED IN PROMPT", "mechanism": "String", "injuries": "String", "signs": "String", "treatment": "String"},
   "nine_line": {"line1_location": "String", "line2_freq": "String", "line3_patients_precedence": "String", "line4_equipment": "String", "line5_patients_type": "String", "line6_security": "String", "line7_marking": "String", "line8_nationality": "String", "line9_nbc_terrain": "String"},
   "patient_data": {"demographics": "String", "history": "String", "allergies": "String"},
-  "triage_category": "T1/T2/T3/T4/Expectant",
+  "triage_category": "T1/T2/T3/Expectant",
   "disposition": "One of: RTD | Evac to Role 3 | Hold at Role 2 | Died of Wounds | Expectant",
   "phases": {
     "dcr": {"title": "Damage Control Resuscitation", "narrative": "String", "expected_actions": ["String"], "vitals_trend": [{"time": "String", "hr": "String", "bp": "String", "rr": "String", "spo2": "String", "gcs": "String"}], "contingencies": [{"condition": "String", "consequence": "String", "intervention": "String"}]},
@@ -280,17 +339,25 @@ JSON STRUCTURE:
   "debrief_questions": ["String"]
 }"""
 
-def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str, is_mascal: bool = False) -> Dict:
+def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str, is_mascal: bool = False, mets: Optional[List[str]] = None) -> Dict:
     phases = determine_case_phases(case_type, mechanism, is_mascal)
     phase_instr = "This case does NOT require surgery. Only DCR and PCC. Set dcs to null." if phases == ["DCR", "PCC"] else "This case requires surgery. Include DCR, DCS, and PCC."
 
-    zap = str(random.randint(10000, 99999))
+    zap = _new_zap()
+
+    mech_context = MECHANISM_CONTEXT.get(mechanism)
+    mets_line = (
+        f"Where clinically natural, tie learning objectives to these unit METL tasks: {', '.join(mets[:6])}.\n"
+        if mets else ""
+    )
 
     prompt = (
         f"CONTEXT: Role 2 in {environment}, {region}.\n"
         f"CASE: {case_type}\n"
         f"MECHANISM: {mechanism}\n"
-        f"{phase_instr}\n"
+        + (f"{mech_context}\n" if mech_context else "")
+        + mets_line
+        + f"{phase_instr}\n"
         f"ZAP NUMBER: Use exactly '{zap}' as the zap field — do not change it.\n"
         f"Generate the case now."
     )
@@ -319,7 +386,7 @@ def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True)
     return {
         "meta": {"title": case_type, "estimated_duration": "30-45 min" if is_trauma else "20-30 min", "personnel": "Medical Team", "target_specialty": "Emergency Medicine" if is_trauma else "Family Physician"},
         "learning_objectives": ["Perform primary survey", "Initiate resuscitation", "Determine evacuation priority"],
-        "zmist": {"zap": str(random.randint(10000, 99999)), "mechanism": mechanism, "injuries": case_type, "signs": "HR 110, BP 100/70" if is_trauma else "HR 88, BP 120/80", "treatment": "IV, O2, monitoring"},
+        "zmist": {"zap": _new_zap(), "mechanism": mechanism, "injuries": case_type, "signs": "HR 110, BP 100/70" if is_trauma else "HR 88, BP 120/80", "treatment": "IV, O2, monitoring"},
         "nine_line": {"line1_location": "Grid TBD", "line2_freq": "Pri: 123.45", "line3_patients_precedence": "1 Alpha" if is_trauma else "1 Charlie", "line4_equipment": "None", "line5_patients_type": "1 Litter" if is_trauma else "1 Ambulatory", "line6_security": "Secure", "line7_marking": "VS-17", "line8_nationality": "US Military", "line9_nbc_terrain": "None"},
         "patient_data": {"demographics": f"{random.randint(19, 35)} yo male Marine", "history": "No PMH", "allergies": "NKDA"},
         "triage_category": "T2" if is_trauma else "T3",
@@ -353,25 +420,50 @@ Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
 
 def generate_annex_q(config: ExerciseConfig) -> str:
     total_cas = sum(_day_patients(d) for d in config.days)
-    prompt = f"""Generate Annex Q (Medical Services) for:
+    # Feed the annex the same planning factors the MSEL timeline is built on so
+    # the published document can't contradict the schedule it accompanies.
+    urgent_t = _transit_min("Urgent", config)
+    priority_t = _transit_min("Priority", config)
+    routine_t = _transit_min("Routine", config)
+    prompt = f"""Generate Annex Q (Health Service Support / Medical Services) to the OPORD for:
 Exercise: {config.exercise_name}, Environment: {config.environment}, Region: {config.region}
-Total Casualties: {total_cas}, Footprint: {', '.join(config.selected_footprint)}
+Threat: {config.threat_level}
+Total Casualties: {total_cas} across {config.duration} days, Footprint: {', '.join(config.selected_footprint)}
 Specialists: {json.dumps(config.specialists)}
 
-Include: HSS concept, MTFs, MEDEVAC, Class VIII, blood support, dental, combat stress, PVNTMED"""
-    
+Ground the annex in these exercise planning factors — the document must stay consistent with them:
+- Blood: {STARTING_LTOWB_UNITS} units LTOWB on hand at the Role 2 at exercise start; walking blood bank activates once stock is exhausted.
+- Modeled POI-to-Role 2 evacuation timelines under the {config.threat_level} threat posture: Urgent ~{urgent_t} min, Priority ~{priority_t} min, Routine ~{routine_t} min.
+
+Structure per JP 4-02 / MCWP conventions:
+1. SITUATION — medical threat assessment incl. expected DNBI for {config.environment} terrain
+2. MISSION
+3. EXECUTION — concept of HSS support by phase; MEDEVAC (air/ground platforms, precedence criteria, contested-evacuation mitigations); patient movement and medical regulating; hospitalization and Role 2 holding policy
+4. CLASS VIII RESUPPLY AND BLOOD MANAGEMENT — incl. walking blood bank procedures
+5. PREVENTIVE MEDICINE
+6. DENTAL SERVICES
+7. COMBAT AND OPERATIONAL STRESS CONTROL
+8. MEDICAL REPORTING AND DOCUMENTATION"""
+
     response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
     return response.text
 
 def generate_medroe(config: ExerciseConfig) -> str:
     has_cbrn = any(d.cbrn for d in config.days)
     has_detainee = any(d.detainee_ops for d in config.days)
-    
-    prompt = f"""Generate MEDROE for:
-Exercise: {config.exercise_name}, Environment: {config.environment}
-CBRN: {has_cbrn}, Detainee Ops: {has_detainee}
 
-Include: Treatment priorities, evacuation priorities, holding policy, blood products, documentation, MASCAL procedures"""
+    prompt = f"""Generate MEDROE (Medical Rules of Engagement) for:
+Exercise: {config.exercise_name}, Environment: {config.environment}, Threat: {config.threat_level}
+CBRN play: {has_cbrn}, Detainee Ops: {has_detainee}
+
+Include:
+- Eligibility and treatment priorities: US forces, partner forces, host-nation civilians, detainee/EPW — care rendered by clinical need per the Geneva Conventions
+- Evacuation precedence criteria (Urgent / Priority / Routine) and who may request each
+- Role 2 holding policy (maximum holding hours before evacuation or RTD)
+- Blood product release authority, incl. walking blood bank activation criteria
+- Expectant-casualty management and Died of Wounds procedures
+- Documentation requirements
+- MASCAL declaration authority and procedures{chr(10) + '- CBRN casualty decontamination-before-treatment rules' if has_cbrn else ''}{chr(10) + '- Detainee care, custody, and medical documentation rules' if has_detainee else ''}"""
     
     response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
     return response.text
@@ -630,11 +722,12 @@ def _route_and_inbound(case: Dict, is_mascal_wave: bool) -> tuple:
     """Decide route + whether the casualty is called in to the COC, using only
     facts already in the case (triage, surgical need, stated transport). No dice:
     minor DNBI (T3/T4, non-surgical) self-present as walking wounded; everyone
-    else — and all MASCAL casualties — are inbound with a COC call + 9-line."""
+    else — and all MASCAL casualties — are inbound with a COC call + 9-line.
+    Expectant casualties never self-present: they arrive by litter, called in."""
     triage = case.get("triage_category", "T2")
     surgical = case.get("phases", {}).get("dcs") is not None
     transport = (case.get("evacuation", {}).get("transport_type") or "").strip()
-    inbound = is_mascal_wave or surgical or triage in ("T1", "T2")
+    inbound = is_mascal_wave or surgical or triage in ("T1", "T2", "T4", "Expectant")
     if not inbound:
         return "Walk-in", False
     if transport and not any(w in transport.lower() for w in ("walk", "ambul", "self")):
@@ -676,11 +769,29 @@ def _case_teo(case: Dict, is_mascal_wave: bool = False) -> Dict:
         "debrief": " • ".join(case.get("debrief_questions", []) or []),
     }
 
-def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
+def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]]) -> tuple:
+    """Build the MSEL timeline, drawing each slot's case from the pool it was
+    generated for: (day_number, is_mascal) -> cases. This keeps MASCAL-etiology
+    cases inside that day's MASCAL wave (a UAS-strike case never fills a
+    routine DNBI slot and vice versa). All timing math is unchanged — pooling
+    only decides WHICH case fills a slot, never WHEN the slot occurs.
+
+    Returns (schedule, ordered_cases): ordered_cases lists cases in schedule
+    order so 'Case N' serials in the MSEL match Case N in the case book."""
     schedule = []
-    case_idx = 0
+    ordered_cases: List[Dict] = []
     assigned_counts = {}
     blood_used = 0  # cumulative whole-blood-equivalent units drawn, exercise-wide
+
+    def _draw(day_number: int, is_mascal: bool) -> Optional[Dict]:
+        pool = case_pools.get((day_number, is_mascal))
+        if pool:
+            return pool.pop()
+        # Defensive: never drop a scheduled slot — borrow from any non-empty pool.
+        for p in case_pools.values():
+            if p:
+                return p.pop()
+        return None
 
     for day in config.days:
         if day.cbrn:
@@ -717,9 +828,9 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
             time_spread = 45 if is_mascal_wave else 60
 
             for p in range(wave_pts):
-                if case_idx >= len(cases):
+                case = _draw(day.day_number, is_mascal_wave)
+                if case is None:
                     break
-                case = cases[case_idx]
 
                 # MASCAL is a compressed spike then a tail (front-loaded); routine
                 # casualties spread evenly across the wave.
@@ -772,15 +883,15 @@ def generate_schedule(config: ExerciseConfig, cases: List[Dict]) -> List[Dict]:
                     "mechanism": case.get("zmist", {}).get("mechanism", "Unknown")[:50],
                     "brief_description": case.get("zmist", {}).get("injuries", "")[:80],
                     "evaluator": assign_evaluator(case, config.specialists, assigned_counts),
-                    "case_num": f"Case {case_idx + 1}",
+                    "case_num": f"Case {len(ordered_cases) + 1}",
                     "blood_cum": blood_used,
                     "blood_on_hand": on_hand,
                     "blood_source": blood_source,
                     **teo,
                 })
-                case_idx += 1
+                ordered_cases.append(case)
 
-    return schedule
+    return schedule, ordered_cases
 
 # Document creation
 def create_docx(title: str, subtitle: str, content: str) -> BytesIO:
@@ -962,6 +1073,84 @@ def _sheet(df: pd.DataFrame, source_cols, labels) -> pd.DataFrame:
     out.columns = labels
     return out
 
+def _parse_hhmm(s) -> Optional[int]:
+    """HHMM clock string -> minutes. Times before 0400 are treated as
+    past-midnight (night wave runs 2000-0200) so same-day interval math works."""
+    try:
+        s = str(s).strip()
+        if len(s) == 4 and s.isdigit():
+            m = int(s[:2]) * 60 + int(s[2:])
+            return m + 24 * 60 if m < 4 * 60 else m
+    except Exception:
+        pass
+    return None
+
+def _capacity_analysis(schedule: List[Dict], config: ExerciseConfig) -> pd.DataFrame:
+    """Planner-facing capacity vs demand roll-up, computed purely from the
+    arrival/dwell times already on the schedule — it reports on the timeline,
+    it never changes it."""
+    specialists = config.specialists or {}
+    surgeons = specialists.get("General Surgery", 0) + specialists.get("Orthopaedic Surgery", 0)
+
+    by_day: Dict[Any, List[tuple]] = {}
+    eval_load: Dict[Any, Dict[str, int]] = {}
+    for r in schedule:
+        if str(r.get("case_num", "")).upper() in ("DRILL", "INJECT"):
+            continue
+        arr = _parse_hhmm(r.get("time"))
+        if arr is None:
+            continue
+        try:
+            dwell = int(float(r.get("r2_dwell") or 0))
+        except (TypeError, ValueError):
+            dwell = 0
+        if not dwell:
+            clr = _parse_hhmm(r.get("cleared"))
+            dwell = (clr - arr) if (clr is not None and clr > arr) else 60
+        surgical = str(r.get("surgical", "")).strip().lower() == "yes"
+        by_day.setdefault(r.get("day"), []).append((arr, arr + dwell, surgical))
+        ev = r.get("evaluator") or ""
+        if ev and ev not in ("All Hands", "Unassigned"):
+            eval_load.setdefault(r.get("day"), {})[ev] = eval_load.setdefault(r.get("day"), {}).get(ev, 0) + 1
+
+    rows = []
+    for day in sorted(by_day):
+        intervals = by_day[day]
+        # Sweep-line over arrival/cleared events for peak concurrent load.
+        events = sorted([(a, 1, s) for a, c, s in intervals] + [(c, -1, s) for a, c, s in intervals],
+                        key=lambda e: (e[0], e[1]))
+        cur = peak = cur_s = peak_s = 0
+        peak_t = peak_s_t = 0
+        for t, d, s in events:
+            cur += d
+            if s:
+                cur_s += d
+            if cur > peak:
+                peak, peak_t = cur, t
+            if cur_s > peak_s:
+                peak_s, peak_s_t = cur_s, t
+        rows.append({"Day": day, "Metric": "Peak concurrent census",
+                     "Value": f"{peak} patients at {_clock(peak_t)}", "Flag": ""})
+        rows.append({"Day": day, "Metric": "Peak concurrent surgical cases",
+                     "Value": f"{peak_s} at {_clock(peak_s_t)} (surgeons on hand: {surgeons})",
+                     "Flag": "EXCEEDS SURGEON COUNT" if surgeons and peak_s > surgeons else ""})
+        if eval_load.get(day):
+            ev, n = max(eval_load[day].items(), key=lambda kv: kv[1])
+            rows.append({"Day": day, "Metric": "Busiest evaluator",
+                         "Value": f"{ev} — {n} cases", "Flag": "HIGH LOAD" if n > 6 else ""})
+
+    total_blood = 0
+    for r in schedule:
+        try:
+            total_blood += int(float(r.get("blood_units") or 0))
+        except (TypeError, ValueError):
+            pass
+    deficit = max(0, total_blood - STARTING_LTOWB_UNITS)
+    rows.append({"Day": "All", "Metric": "Blood demand vs LTOWB stock",
+                 "Value": f"{total_blood} WBE units vs {STARTING_LTOWB_UNITS} on hand",
+                 "Flag": f"WALKING BLOOD BANK — {deficit} u shortfall" if deficit else ""})
+    return pd.DataFrame(rows) if rows else pd.DataFrame({"Day": [], "Metric": [], "Value": [], "Flag": []})
+
 def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     raw = pd.DataFrame(schedule)
 
@@ -1020,9 +1209,12 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
             else f"Within stock — {STARTING_LTOWB_UNITS - total_blood} u remaining")})
     objectives = pd.DataFrame(obj_data) if obj_data else pd.DataFrame({"Category": [], "Item": []})
 
+    # Sheet 5 — Planner Analysis (capacity vs demand, derived from the timeline).
+    analysis = _capacity_analysis(schedule, config)
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for name, d in (('MSEL', msel), ('T&EO', teo), ('Blood Ledger', ledger), ('Objectives', objectives)):
+        for name, d in (('MSEL', msel), ('T&EO', teo), ('Blood Ledger', ledger), ('Objectives', objectives), ('Planner Analysis', analysis)):
             d.to_excel(writer, index=False, sheet_name=name)
             _autosize(writer.sheets[name], d)
     output.seek(0)
@@ -1098,7 +1290,9 @@ Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
     return {"name": name}
 
 def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
-    """Return a list of (case_type, mechanism, is_trauma, is_mascal) tuples — one per patient."""
+    """Return a list of (day_number, case_type, mechanism, is_trauma, is_mascal)
+    tuples — one per patient. Day-tagged so scheduling can keep each case in
+    the pool (day, routine/MASCAL) it was generated for."""
     tasks = []
     env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
     for day in config.days:
@@ -1107,31 +1301,35 @@ def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
         num_trauma = int(day.total_patients * routine_ratio)
         num_dnbi = day.total_patients - num_trauma
         for _ in range(num_trauma):
-            tasks.append((random.choice(GENERAL_TRAUMA), day.tactical_setting, True, False))
+            tasks.append((day.day_number, random.choice(GENERAL_TRAUMA), day.tactical_setting, True, False))
         for _ in range(num_dnbi):
-            tasks.append((random.choice(env_dnbi), f"DNBI - {config.environment}", False, False))
+            tasks.append((day.day_number, random.choice(env_dnbi), f"DNBI - {config.environment}", False, False))
         # MASCAL surge — additive extra casualties, trauma-heavy, tagged is_mascal.
         if day.mascal and day.mascal_patients:
             inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal_etiology else GENERAL_TRAUMA
             m_trauma = int(day.mascal_patients * 0.85)
             for _ in range(m_trauma):
-                tasks.append((random.choice(inj_types), day.mascal_etiology or day.tactical_setting, True, True))
+                tasks.append((day.day_number, random.choice(inj_types), day.mascal_etiology or day.tactical_setting, True, True))
             for _ in range(day.mascal_patients - m_trauma):
-                tasks.append((random.choice(env_dnbi), f"DNBI - {config.environment}", False, True))
+                tasks.append((day.day_number, random.choice(env_dnbi), f"DNBI - {config.environment}", False, True))
     return tasks
 
-def _generate_one(task: tuple, environment: str, region: str) -> Dict:
-    case_type, mech, is_trauma, is_mascal = task
+def _generate_one(task: tuple, environment: str, region: str, mets: Optional[List[str]] = None) -> Dict:
+    _day, case_type, mech, is_trauma, is_mascal = task
     try:
-        return generate_case_sync(case_type, mech, environment, region, is_mascal)
-    except:
-        return create_fallback_case(case_type, mech, is_trauma)
+        return generate_case_sync(case_type, mech, environment, region, is_mascal, mets)
+    except Exception as e:
+        print(f"WARNING: case generation failed ({case_type}): {e} — using offline fallback")
+        case = create_fallback_case(case_type, mech, is_trauma)
+        case["_fallback"] = True
+        return case
 
 # In-memory job store — always used as primary, DB synced as best-effort
 _jobs: Dict[str, Dict] = {}
 
 def _job_create(job_id: str):
-    _jobs[job_id] = {"status": "running", "progress": "Starting...", "completed": 0, "total": 0}
+    _jobs[job_id] = {"status": "running", "progress": "Starting...", "completed": 0, "total": 0,
+                     "ts": datetime.utcnow()}
     if SessionLocal:
         try:
             db = SessionLocal()
@@ -1187,7 +1385,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
 
         cases_results: Dict[int, Dict] = {}
         with ThreadPoolExecutor(max_workers=min(5, max(total, 1))) as pool:
-            futures = {pool.submit(_generate_one, t, config.environment, config.region): i
+            futures = {pool.submit(_generate_one, t, config.environment, config.region, config.selected_mets): i
                        for i, t in enumerate(tasks)}
             completed = 0
             for future in as_completed(futures):
@@ -1196,10 +1394,20 @@ def _run_generation(config: ExerciseConfig, job_id: str):
                 _job_update(job_id, progress=f"Generating cases: {completed} / {total}", completed=completed)
 
         cases = [cases_results[i] for i in range(total)]
+        fallback_count = sum(1 for c in cases if c.pop("_fallback", False))
+        if fallback_count:
+            print(f"WARNING: {fallback_count}/{total} cases used the offline fallback")
         _job_update(job_id, progress="Generating documents...", completed=total)
 
-        random.shuffle(cases)
-        schedule = generate_schedule(config, cases)
+        # Pool cases by (day, MASCAL) so each schedule slot draws a case that
+        # was generated for it; shuffle within pools to mix trauma/DNBI order.
+        case_pools: Dict[tuple, List[Dict]] = {}
+        for t, c in zip(tasks, cases):
+            case_pools.setdefault((t[0], t[4]), []).append(c)
+        for p in case_pools.values():
+            random.shuffle(p)
+
+        schedule, cases = generate_schedule(config, case_pools)
         with ThreadPoolExecutor(max_workers=3) as pool:
             f_warno = pool.submit(generate_warno, config)
             f_annex = pool.submit(generate_annex_q, config)
@@ -1236,8 +1444,11 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         zip_buf.seek(0)
 
         token = str(uuid.uuid4())
-        _packages[token] = zip_buf.getvalue()
-        _job_update(job_id, status="complete", progress="Package ready!",
+        _packages[token] = {"data": zip_buf.getvalue(), "ts": datetime.utcnow()}
+        done_msg = "Package ready!" if not fallback_count else (
+            f"Package ready — NOTE: {fallback_count} of {total} cases used the offline "
+            f"fallback template (AI generation failed); review the case book before use.")
+        _job_update(job_id, status="complete", progress=done_msg,
                     completed=total, total=total, token=token,
                     filename=f"{config.exercise_name}_Package.zip")
     except Exception as e:
@@ -1248,6 +1459,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
 
 @app.post("/generate-exercise")
 async def generate_exercise(config: ExerciseConfig):
+    _purge_stale_stores()
     job_id = str(uuid.uuid4())
     _job_create(job_id)
     threading.Thread(target=_run_generation, args=(config, job_id), daemon=True).start()
@@ -1264,10 +1476,10 @@ async def get_job_status(job_id: str):
 
 @app.get("/download/{token}")
 async def download_package(token: str):
-    zip_bytes = _packages.pop(token, None)
-    if not zip_bytes:
+    pkg = _packages.pop(token, None)
+    if not pkg:
         raise HTTPException(status_code=404, detail="Package not found or already downloaded")
-    return Response(zip_bytes, media_type="application/zip",
+    return Response(pkg["data"], media_type="application/zip",
                     headers={"Content-Disposition": "attachment; filename=package.zip"})
 
 @app.get("/exercises")
