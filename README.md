@@ -57,21 +57,23 @@ s3://r2ra-artifacts-885232248320/role2-builder/latest.zip
 The R2RA repo's build pulls that bundle into its own deploy artifact — see
 R2RA's `buildspec.yml` and `deploy/docker-compose.eb.yml`.
 
-### Shipping a backend change (two-step deploy)
+### Shipping a backend change (fully automatic)
 
-Shipping a backend change is two pipeline runs, in order:
+A push to `main` (excluding docs/markdown-only changes) deploys with no
+manual steps:
 
-1. The `role2-builder` pipeline (publishes the bundle to S3).
-2. The `r2ra` pipeline (pulls the bundle and deploys to `r2ra-prod`).
+1. GitHub Actions (`.github/workflows/deploy.yml`) authenticates to AWS
+   through GitHub OIDC (IAM role `github-actions-start-pipeline` — no AWS
+   keys stored in GitHub) and starts the `role2-builder` pipeline, which
+   publishes the bundle to S3.
+2. When that pipeline succeeds, the EventBridge rule
+   **`rb-publish-chains-r2ra`** automatically starts the `r2ra` pipeline,
+   which pulls the bundle and deploys to `r2ra-prod`. Live ~15 minutes
+   after the push.
 
-A push to `main` (excluding docs/markdown-only changes) starts step 1
-automatically via the GitHub Actions workflow (`.github/workflows/deploy.yml`),
-which authenticates to AWS through GitHub OIDC (IAM role
-`github-actions-start-pipeline` — no AWS keys stored in GitHub) and starts the
-`role2-builder` pipeline. The R2RA side then picks up the published bundle
-(see the R2RA repo for how its pipeline is triggered). Ordering matters — if
-starting `r2ra` manually, wait for the `role2-builder` pipeline to finish
-first, or the deploy ships the previous (stale) bundle.
+Ordering only matters if you bypass the automation — a manually started
+`r2ra` run must wait for the `role2-builder` pipeline to finish first, or
+the deploy ships the previous (stale) bundle.
 
 Manual fallback if the workflow is unavailable (run in order, waiting for the
 first to finish):
