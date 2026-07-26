@@ -59,13 +59,22 @@ R2RA's `buildspec.yml` and `deploy/docker-compose.eb.yml`.
 
 ### Shipping a backend change (two-step deploy)
 
-Shipping a backend change is now two steps:
+Shipping a backend change is two pipeline runs, in order:
 
-1. Run the `role2-builder` pipeline (publishes the bundle to S3).
-2. Run the `r2ra` pipeline (pulls the bundle and deploys to `r2ra-prod`).
+1. The `role2-builder` pipeline (publishes the bundle to S3).
+2. The `r2ra` pipeline (pulls the bundle and deploys to `r2ra-prod`).
 
-Both pipelines currently need **manual starts** because GitHub push triggers are
-broken pending a GitHub App connection fix:
+A push to `main` (excluding docs/markdown-only changes) starts step 1
+automatically via the GitHub Actions workflow (`.github/workflows/deploy.yml`),
+which authenticates to AWS through GitHub OIDC (IAM role
+`github-actions-start-pipeline` — no AWS keys stored in GitHub) and starts the
+`role2-builder` pipeline. The R2RA side then picks up the published bundle
+(see the R2RA repo for how its pipeline is triggered). Ordering matters — if
+starting `r2ra` manually, wait for the `role2-builder` pipeline to finish
+first, or the deploy ships the previous (stale) bundle.
+
+Manual fallback if the workflow is unavailable (run in order, waiting for the
+first to finish):
 
 ```bash
 aws codepipeline start-pipeline-execution --name role2-builder
