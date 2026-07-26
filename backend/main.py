@@ -194,6 +194,25 @@ TRAUMA_BY_ETIOLOGY = {
     "Burns/Fire": ["Severe thermal burns (>30% TBSA)", "Inhalation injury", "CO poisoning", "Facial burns with airway compromise"],
     "Drowning (Amphibious)": ["Near-drowning with aspiration", "Hypothermia with near-drowning", "Trauma from vessel impact"],
     "VBIED": ["Multi-system blast trauma", "Severe burns with TBI", "Traumatic amputation bilateral", "Penetrating torso wounds"],
+    "UAS/Drone Strike": ["Multiple small deep fragment wounds to head/neck and posterior torso", "Traumatic below-knee amputation from FPV drone strike", "Junctional hemorrhage from drone-dropped munition fragments", "Blast TBI with penetrating facial fragments", "Extremity fragment wounds with prolonged tourniquet time and wound contamination"],
+}
+
+# Mechanism-specific context injected into the case-generation prompt so the
+# model grounds the scenario in observed casualty patterns for that etiology.
+MECHANISM_CONTEXT = {
+    "UAS/Drone Strike": (
+        "UAS CASUALTY PATTERN (per Russo-Ukrainian war experience, where UAS became "
+        "the leading cause of combat casualties): strikes are FPV attack drones with "
+        "RPG-type shaped-charge warheads or drone-dropped VOG-type grenades detonating "
+        "overhead. Expect multiple small, deep penetrating fragments concentrated in "
+        "the head/neck, posterior torso, and extremities (body armor spares the anterior "
+        "torso; overhead cover is often absent); traumatic amputations from direct FPV "
+        "hits; and combined blast TBI. Drones interdict evacuation routes and re-attack "
+        "casualty collection points ('double-tap'), so casualties frequently arrive at "
+        "Role 2 hours late after prolonged field care — build in prolonged tourniquet "
+        "times with reperfusion/conversion decisions, wound contamination with early "
+        "infection risk, hypothermia, and under-resuscitation on arrival."
+    ),
 }
 
 GENERAL_TRAUMA = [
@@ -286,11 +305,14 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
 
     zap = str(random.randint(10000, 99999))
 
+    mech_context = MECHANISM_CONTEXT.get(mechanism)
+
     prompt = (
         f"CONTEXT: Role 2 in {environment}, {region}.\n"
         f"CASE: {case_type}\n"
         f"MECHANISM: {mechanism}\n"
-        f"{phase_instr}\n"
+        + (f"{mech_context}\n" if mech_context else "")
+        + f"{phase_instr}\n"
         f"ZAP NUMBER: Use exactly '{zap}' as the zap field — do not change it.\n"
         f"Generate the case now."
     )

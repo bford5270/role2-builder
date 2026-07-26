@@ -47,7 +47,8 @@ const MASCAL_ETIOLOGIES = [
   'Structural Collapse',
   'Burns/Fire',
   'Drowning (Amphibious)',
-  'VBIED'
+  'VBIED',
+  'UAS/Drone Strike'
 ];
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
