@@ -718,6 +718,81 @@ def _dwell_min(case: Dict, is_mascal_wave: bool = False) -> int:
     base = 150 if phases.get("dcs") else 90 if phases.get("pcc") else 45
     return int(round(base * (1.5 if is_mascal_wave else 1.0)))
 
+# --- CSC PACE state (see docs/csc-pace/README.md) -------------------------
+# Recommended Role 2 care state on the running timeline, per the unit's CSC PACE
+# framework: PRIMARY / ALTERNATE / CONTINGENCY / EMERGENCY (JTS best / better /
+# minimum / below-minimum). Each transition trigger maps to a signal the exercise
+# already computes; the state at any point is the worst trigger tripped ("OR"
+# logic). Resupply/comms triggers aren't exercise inputs, so contested logistics
+# is inferred from threat level (framework Assumption 1). Role 2 capacity for the
+# saturation trigger is derived from footprint + surgical/nursing staff.
+_PACE_STATES = ["PRIMARY", "ALTERNATE", "CONTINGENCY", "EMERGENCY"]
+
+# Baseline conditions (theater-level, capped at ALTERNATE): a degraded corridor,
+# contested resupply, or a gapped surgical billet is a starting posture, not by
+# itself an allocation (CONTINGENCY) decision. CONTINGENCY and above come from
+# the DYNAMIC triggers — MASCAL patient load exceeding throughput, and blood
+# supply exhaustion — which is what the framework actually keys those states on.
+def _logistics_pace(config) -> int:
+    """Contested resupply inferred from threat (framework Assumption 1): peer/
+    hybrid theaters assume resupply slipping past doctrinal -> ALTERNATE floor."""
+    t = (getattr(config, "threat_level", "") or "").lower()
+    return 1 if ("peer" in t or "hybrid" in t) else 0
+
+def _evac_corridor_pace(config) -> int:
+    """Evac-corridor condition from threat posture + terrain (a reference-priority
+    transit), capped at ALTERNATE — 'evac slipping doctrinal'."""
+    return 1 if _transit_min("Priority", config) > 90 else 0
+
+def _staff_pace_floor(config) -> int:
+    """PRIMARY requires dual surgical teams; a single team is a gapped billet."""
+    surgeons = (getattr(config, "specialists", {}) or {}).get("General Surgery", 0)
+    return 0 if surgeons >= 2 else 1
+
+def _r2_capacity(config) -> int:
+    """Concurrent Role 2 holding capacity from footprint + staff (OR tables from
+    surgical teams, nursing-held beds). Planning estimate for the saturation
+    trigger only."""
+    spec = getattr(config, "specialists", {}) or {}
+    or_tables = max(1, spec.get("General Surgery", 0))
+    nurses = sum(spec.get(k, 0) for k in ("ICU Nurse", "ER Nurse", "ERC Nurse", "Med Surg Nurse"))
+    footprint = len(getattr(config, "selected_footprint", []) or [])
+    return max(4, or_tables * 2 + nurses + footprint)
+
+def _blood_pace(source: str, blood_cum: int) -> int:
+    """WBB active = ALTERNATE; sustained deficit beyond a second stock = allocation
+    (CONTINGENCY)."""
+    if source == "Walking Blood Bank":
+        return 2 if blood_cum > 2 * STARTING_LTOWB_UNITS else 1
+    return 0
+
+def annotate_pace_states(schedule: List[Dict], config) -> None:
+    """Second pass: assign each casualty row a recommended PACE state + the trigger
+    that set it, using the whole timeline for concurrent Role 2 census."""
+    capacity = _r2_capacity(config)
+    base_sigs = {
+        "contested logistics": _logistics_pace(config),
+        "evac corridor": _evac_corridor_pace(config),
+        "staff (single surgical team)": _staff_pace_floor(config),
+    }
+    by_day: Dict[int, List[Dict]] = {}
+    for r in schedule:
+        if "arr_raw" in r:
+            by_day.setdefault(r["day"], []).append(r)
+    for r in schedule:
+        if "arr_raw" not in r:  # CBRN/detainee inject rows carry no clinical load
+            continue
+        census = sum(1 for o in by_day.get(r["day"], [])
+                     if o["arr_raw"] <= r["arr_raw"] < o["cleared_raw"])
+        sigs = dict(base_sigs)
+        sigs["blood/WBB"] = _blood_pace(r.get("blood_source", ""), r.get("blood_cum", 0))
+        if census > capacity:  # MASCAL / patient load exceeds throughput
+            sigs[f"saturation {census}/{capacity}"] = 2
+        score = max(sigs.values())
+        r["pace_state"] = _PACE_STATES[score]
+        r["pace_driver"] = ", ".join(k for k, v in sigs.items() if v == score and v > 0) or "nominal"
+        r["r2_census"] = census
+
 def _route_and_inbound(case: Dict, is_mascal_wave: bool) -> tuple:
     """Decide route + whether the casualty is called in to the COC, using only
     facts already in the case (triage, surgical need, stated transport). No dice:
@@ -855,8 +930,10 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
                 teo = _case_teo(case, is_mascal_wave)
                 # Timeline: point of injury (golden-hour anchor) back from arrival
                 # by the parameter-driven transit; Role 2 cleared = arrival + dwell.
-                poi_time = _clock(arr_total - _transit_min(teo["evac_precedence"], config))
-                cleared = _clock(arr_total + teo["r2_dwell"])
+                transit = _transit_min(teo["evac_precedence"], config)
+                poi_time = _clock(arr_total - transit)
+                cleared_raw = arr_total + teo["r2_dwell"]
+                cleared = _clock(cleared_raw)
 
                 # Running blood ledger: draw against LTOWB stock, then walking
                 # blood bank once the on-hand supply is spent.
@@ -887,10 +964,14 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
                     "blood_cum": blood_used,
                     "blood_on_hand": on_hand,
                     "blood_source": blood_source,
+                    "transit_min": transit,
+                    "arr_raw": arr_total,
+                    "cleared_raw": cleared_raw,
                     **teo,
                 })
                 ordered_cases.append(case)
 
+    annotate_pace_states(schedule, config)
     return schedule, ordered_cases
 
 # Document creation
@@ -1113,6 +1194,16 @@ def _capacity_analysis(schedule: List[Dict], config: ExerciseConfig) -> pd.DataF
         if ev and ev not in ("All Hands", "Unassigned"):
             eval_load.setdefault(r.get("day"), {})[ev] = eval_load.setdefault(r.get("day"), {}).get(ev, 0) + 1
 
+    # Peak (worst) recommended PACE state per day, with the trigger that set it.
+    day_pace: Dict[Any, tuple] = {}
+    for r in schedule:
+        ps = r.get("pace_state")
+        if not ps or ps not in _PACE_STATES:
+            continue
+        idx = _PACE_STATES.index(ps)
+        if idx >= day_pace.get(r.get("day"), (-1, ""))[0]:
+            day_pace[r.get("day")] = (idx, r.get("pace_driver", ""))
+
     rows = []
     for day in sorted(by_day):
         intervals = by_day[day]
@@ -1129,6 +1220,11 @@ def _capacity_analysis(schedule: List[Dict], config: ExerciseConfig) -> pd.DataF
                 peak, peak_t = cur, t
             if cur_s > peak_s:
                 peak_s, peak_s_t = cur_s, t
+        if day in day_pace:
+            idx, drv = day_pace[day]
+            rows.append({"Day": day, "Metric": "Recommended PACE state (peak)",
+                         "Value": f"{_PACE_STATES[idx]}" + (f" — {drv}" if drv else ""),
+                         "Flag": "DEGRADED" if idx >= 2 else ("ELEVATED" if idx == 1 else "")})
         rows.append({"Day": day, "Metric": "Peak concurrent census",
                      "Value": f"{peak} patients at {_clock(peak_t)}", "Flag": ""})
         rows.append({"Day": day, "Metric": "Peak concurrent surgical cases",
@@ -1156,22 +1252,23 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
 
     # Inject rows lack the numeric blood/dwell keys -> NaN floats the column and
     # casualty counts render like "24.0". Show clean ints, blank for injects.
-    for col in ("blood_units", "blood_cum", "blood_on_hand", "r2_dwell"):
+    for col in ("blood_units", "blood_cum", "blood_on_hand", "r2_dwell", "r2_census"):
         if col in raw.columns:
             raw[col] = raw[col].map(lambda v: "" if (v is None or (isinstance(v, float) and pd.isna(v)) or v == "") else int(float(v)))
 
-    # Sheet 1 — MSEL timeline (what EXCON runs the exercise from).
+    # Sheet 1 — MSEL timeline (what EXCON runs the exercise from). The PACE column
+    # is the recommended Role 2 CSC state at that point on the timeline.
     msel = _sheet(
         raw,
-        ['day', 'event', 'poi_time', 'coc_hit_time', 'nine_line_time', 'time', 'route', 'evac_precedence', 'triage_cat', 'surgical', 'disposition', 'zap', 'mechanism', 'brief_description', 'evaluator', 'case_num'],
-        ['Day', 'Event', 'POI Time', 'COC Hit Time', '9-Line Time', 'Arrival', 'Route', 'Precedence', 'Triage', 'Surgical', 'Disposition', 'ZAP #', 'Mechanism', 'Description', 'Evaluator', 'Serial'],
+        ['day', 'event', 'pace_state', 'poi_time', 'coc_hit_time', 'nine_line_time', 'time', 'route', 'evac_precedence', 'triage_cat', 'surgical', 'disposition', 'zap', 'mechanism', 'brief_description', 'evaluator', 'case_num'],
+        ['Day', 'Event', 'PACE', 'POI Time', 'COC Hit Time', '9-Line Time', 'Arrival', 'Route', 'Precedence', 'Triage', 'Surgical', 'Disposition', 'ZAP #', 'Mechanism', 'Description', 'Evaluator', 'Serial'],
     )
 
     # Sheet 2 — T&EO / Controller detail (per-casualty, straight from the case).
     teo = _sheet(
         raw,
-        ['day', 'time', 'cleared', 'zap', 'triage_cat', 'care_level', 'surgical', 'blood_units', 'blood_tier', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
-        ['Day', 'Arrival', 'R2 Cleared', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Blood (WBE u)', 'Blood Tier', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
+        ['day', 'time', 'cleared', 'pace_state', 'pace_driver', 'r2_census', 'zap', 'triage_cat', 'care_level', 'surgical', 'blood_units', 'blood_tier', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
+        ['Day', 'Arrival', 'R2 Cleared', 'PACE', 'PACE Trigger', 'R2 Census', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Blood (WBE u)', 'Blood Tier', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
     )
 
     # Sheet 3 — Blood Ledger (chronological running consumption vs LTOWB stock).
@@ -1212,9 +1309,32 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     # Sheet 5 — Planner Analysis (capacity vs demand, derived from the timeline).
     analysis = _capacity_analysis(schedule, config)
 
+    # Sheet 6 — PACE Posture reference: the pre-briefed actions per CSC state
+    # (from docs/csc-pace). Static; links a timeline PACE state to what each
+    # actor does. Marked with which states the exercise actually reached.
+    reached = {r.get("pace_state") for r in schedule if r.get("pace_state")}
+    posture = pd.DataFrame([
+        {"PACE State": "PRIMARY", "JTS Tier": "Best", "Reached": "◀ reached" if "PRIMARY" in reached else "",
+         "Command": "Green on COP; standard authorities; no deviation from CPG",
+         "Provider": "Standard care per JTS CPG; full surgical capability; component blood per MTP",
+         "Logistics": "Routine resupply request; Class VIII <24h cycle; no prioritization needed"},
+        {"PACE State": "ALTERNATE", "JTS Tier": "Better", "Reached": "◀ reached" if "ALTERNATE" in reached else "",
+         "Command": "Yellow on COP; substitution brief filed; trigger thresholds armed",
+         "Provider": "Pre-briefed substitutions; LTOWB if components short; capability conserved",
+         "Logistics": "Targeted request for named shortfall items; walking blood bank activated"},
+        {"PACE State": "CONTINGENCY", "JTS Tier": "Minimum", "Reached": "◀ reached" if "CONTINGENCY" in reached else "",
+         "Command": "Red on COP; CO/CMO activates allocation authority; decision-maker engaged",
+         "Provider": "Reverse triage active; advanced care withdrawn per protocol; allocation framework anchors decisions",
+         "Logistics": "Critical asset request; priority on evac corridor; cross-loading evaluated"},
+        {"PACE State": "EMERGENCY", "JTS Tier": "Below minimum", "Reached": "◀ reached" if "EMERGENCY" in reached else "",
+         "Command": "Black on COP; CO/CMO pre-brief in full effect; recovery triggers monitored",
+         "Provider": "Survivability care only; pre-briefed boundaries; document for recovery",
+         "Logistics": "No outbound request possible; operating autonomously; recovery cued to first restored channel"},
+    ])
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for name, d in (('MSEL', msel), ('T&EO', teo), ('Blood Ledger', ledger), ('Objectives', objectives), ('Planner Analysis', analysis)):
+        for name, d in (('MSEL', msel), ('T&EO', teo), ('Blood Ledger', ledger), ('Objectives', objectives), ('Planner Analysis', analysis), ('PACE Posture', posture)):
             d.to_excel(writer, index=False, sheet_name=name)
             _autosize(writer.sheets[name], d)
     output.seek(0)

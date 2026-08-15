@@ -75,16 +75,28 @@ echelon** all see at once — removing the legitimacy gap between "what the prov
 The exercise builder already computes the strain signals these triggers key on. The recommended
 Role 2 PACE state is derived on the **running MSEL timeline** from:
 
-| PACE trigger | Exercise-computed signal |
-|---|---|
-| Class VIII / blood (component → LTOWB → residual) | LTOWB ledger: on-hand stock, walking-blood-bank activation, cumulative shortfall |
-| Evac slipping / non-functional / no movement | Parameter-driven POI→Role 2 transit (threat posture × terrain) |
-| MASCAL > throughput | Concurrent Role 2 census (arrival→cleared windows) vs capacity, during a MASCAL |
-| Staff billets gapped | Surgical staffing from `specialists` (dual vs single surgical team) |
+The recommended state at any point is the **worst trigger tripped** ("OR" logic). Theater
+conditions form a **baseline floor capped at ALTERNATE** (a degraded corridor or gapped billet is
+a starting posture, not by itself an allocation decision); **CONTINGENCY** and above come from the
+**dynamic** triggers the framework actually keys those states on:
 
-Signals not yet modeled in the exercise (resupply clock in hours, comms loss) are candidates for
-a future config input or a scenario inject; until then the logistics posture is inferred from the
-threat level (contested logistics is Assumption 1 of the framework).
+| PACE trigger | Exercise-computed signal | Contributes |
+|---|---|---|
+| Contested resupply (Assumption 1) | Inferred from threat level (peer/hybrid) | ALTERNATE floor |
+| Evac slipping doctrinal | Reference-precedence transit (threat × terrain) > doctrinal | ALTERNATE floor |
+| Staff billets gapped | `specialists`: single vs dual surgical team | ALTERNATE floor |
+| Class VIII / blood: LTOWB → walking blood bank → allocation | LTOWB ledger: WBB activated (ALTERNATE) → sustained deficit beyond a second stock (CONTINGENCY) | ALTERNATE → CONTINGENCY |
+| MASCAL > throughput | Concurrent Role 2 census (arrival→cleared windows) exceeds derived capacity | CONTINGENCY |
+
+Each casualty row on the MSEL carries its recommended **PACE** state and the **trigger** that set
+it; the Planner Analysis sheet reports the **per-day peak** state, and the **PACE Posture** sheet
+lists the pre-briefed command/provider/logistics actions for each state and marks which were
+reached.
+
+**Not yet modeled:** the resupply clock in hours, comms loss, and corridor severance — the
+framework's explicit **EMERGENCY** triggers (supply chain severed / no movement / comms lost).
+Until those exist as a config input or a timed scenario inject, EMERGENCY is not auto-asserted; the
+Role 2 capacity used for the saturation trigger is derived from footprint + surgical/nursing staff.
 
 ## Source files in this folder
 
