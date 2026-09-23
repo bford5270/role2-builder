@@ -22,6 +22,11 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+try:
+    from backend import scenario, redteam, controller_docs
+except ImportError:  # running from inside backend/
+    import scenario, redteam, controller_docs
+
 app = FastAPI(title="Role 2 Exercise Builder API")
 
 # Database setup
@@ -45,6 +50,7 @@ class Exercise(Base):
     annex_q_text = Column(Text)
     medroe_text = Column(Text)
     road_to_war_text = Column(Text)
+    fragos = Column(JSON)
 
 class Job(Base):
     __tablename__ = "jobs"
@@ -58,6 +64,8 @@ class Job(Base):
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+from sqlalchemy import text as _sql_text
+
 if engine:
     try:
         Base.metadata.create_all(bind=engine)
@@ -65,13 +73,17 @@ if engine:
         print(f"WARNING: DB table creation failed: {_e}")
     # create_all does not ALTER existing tables — add newer columns idempotently.
     try:
-        from sqlalchemy import text as _sql_text
         with engine.begin() as _conn:
             _conn.execute(_sql_text(
                 "ALTER TABLE exercises ADD COLUMN IF NOT EXISTS road_to_war_text TEXT"
             ))
     except Exception as _e:
         print(f"WARNING: DB column migration (road_to_war_text) failed: {_e}")
+    try:
+        with engine.begin() as _conn:
+            _conn.execute(_sql_text("ALTER TABLE exercises ADD COLUMN IF NOT EXISTS fragos JSON"))
+    except Exception as _e:
+        print(f"WARNING: DB column migration (fragos) failed: {_e}")
 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 
@@ -122,6 +134,16 @@ def _response_text(response) -> str:
         return "".join(parts).strip()
     except Exception:
         return ""
+
+def _llm_json(prompt: str, system: str) -> str:
+    """JSON-mode Gemini call used by the scenario controller layer and red team."""
+    response = get_client().models.generate_content(
+        model=GEMINI_MODEL, contents=prompt,
+        config={"system_instruction": system, "response_mime_type": "application/json"})
+    text = _response_text(response)
+    if not text:
+        raise ValueError("empty model response")
+    return text
 
 # Curated pools mirror the /generate-name prompt so the offline fallback stays
 # on-brand. None of these appear in the prompt's banned-word list.
@@ -406,19 +428,27 @@ def _day_waves(day) -> int:
     """Effective wave count: routine waves plus one MASCAL wave when enabled."""
     return day.total_waves + (1 if day.mascal else 0)
 
-def generate_warno(config: ExerciseConfig) -> str:
+def _care_chain_block(config: ExerciseConfig, fragos: Optional[List[Dict]]) -> str:
+    if fragos is None:
+        return ""
+    return ("\nCare chain (patient flow) the exercise cases are built on — describe exactly these echelons, and "
+            "note that the listed FRAGOs will modify them:\n"
+            + scenario.chain_summary(config, fragos, _transit_min("Priority", config)) + "\n")
+
+def generate_warno(config: ExerciseConfig, fragos: Optional[List[Dict]] = None) -> str:
     prompt = f"""Generate USMC WARNO (5-paragraph order) for:
 Exercise: {config.exercise_name}, Duration: {config.duration} days
 Unit: {config.supported_unit}, Environment: {config.environment}, Region: {config.region}
 Threat: {config.threat_level}, Footprint: {', '.join(config.selected_footprint)}
 Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {_day_patients(d)} cas, {'MASCAL '+d.mascal_etiology if d.mascal else 'No MASCAL'}, {'CBRN' if d.cbrn else ''}, {'Night' if d.night_ops else 'Day'}" for d in config.days])}
 
+{_care_chain_block(config, fragos)}
 Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
     
     response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
     return response.text
 
-def generate_annex_q(config: ExerciseConfig) -> str:
+def generate_annex_q(config: ExerciseConfig, fragos: Optional[List[Dict]] = None) -> str:
     total_cas = sum(_day_patients(d) for d in config.days)
     # Feed the annex the same planning factors the MSEL timeline is built on so
     # the published document can't contradict the schedule it accompanies.
@@ -434,7 +464,7 @@ Specialists: {json.dumps(config.specialists)}
 Ground the annex in these exercise planning factors — the document must stay consistent with them:
 - Blood: {STARTING_LTOWB_UNITS} units LTOWB on hand at the Role 2 at exercise start; walking blood bank activates once stock is exhausted.
 - Modeled POI-to-Role 2 evacuation timelines under the {config.threat_level} threat posture: Urgent ~{urgent_t} min, Priority ~{priority_t} min, Routine ~{routine_t} min.
-
+{_care_chain_block(config, fragos)}
 Structure per JP 4-02 / MCWP conventions:
 1. SITUATION — medical threat assessment incl. expected DNBI for {config.environment} terrain
 2. MISSION
@@ -1267,8 +1297,8 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     # Sheet 2 — T&EO / Controller detail (per-casualty, straight from the case).
     teo = _sheet(
         raw,
-        ['day', 'time', 'cleared', 'pace_state', 'pace_driver', 'r2_census', 'zap', 'triage_cat', 'care_level', 'surgical', 'blood_units', 'blood_tier', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
-        ['Day', 'Arrival', 'R2 Cleared', 'PACE', 'PACE Trigger', 'R2 Census', 'ZAP #', 'Triage', 'Care Level', 'Surgical', 'Blood (WBE u)', 'Blood Tier', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
+        ['day', 'time', 'cleared', 'pace_state', 'pace_driver', 'r2_census', 'zap', 'triage_cat', 'pathway', 'care_chain', 'fragos_in_force', 'red_team', 'care_level', 'surgical', 'blood_units', 'blood_tier', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
+        ['Day', 'Arrival', 'R2 Cleared', 'PACE', 'PACE Trigger', 'R2 Census', 'ZAP #', 'Triage', 'Pathway', 'Care Chain', 'FRAGOs', 'Red Team', 'Care Level', 'Surgical', 'Blood (WBE u)', 'Blood Tier', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
     )
 
     # Sheet 3 — Blood Ledger (chronological running consumption vs LTOWB stock).
@@ -1497,6 +1527,98 @@ def _job_get(job_id: str):
             print(f"DB job get failed: {e}")
     return None
 
+def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases: List[Dict],
+                             fragos: List[Dict], progress=None) -> None:
+    """Attach a red-teamed controller layer to every scheduled case, built on the
+    care chain in force (WARNO base chain + active FRAGOs) at its arrival time."""
+    rows = [r for r in schedule if "arr_raw" in r]
+    days = {d.day_number: d for d in config.days}
+    tp = _transit_min("Priority", config)
+
+    def one(i: int) -> Dict:
+        case, row = cases[i], rows[i]
+        day = days[row["day"]]
+        chain = scenario.chain_for(config, day, row["arr_raw"], fragos, tp)
+        pathway = scenario.determine_pathway(case, chain)
+        in_force = [f for f in fragos if f["number"] in chain["fragos"]]
+        llm = reviser = None
+        try:
+            ctrl = scenario.generate_controller(case, chain, pathway, in_force,
+                                                scenario._is_maritime(config, day), _llm_json)
+            llm = _llm_json
+            reviser = lambda c, f: scenario.revise_controller(c, f, _llm_json)
+        except Exception as e:
+            print(f"WARNING: controller layer generation failed (case {i + 1}): {e} — using template")
+            ctrl = scenario.fallback_controller(case, chain, pathway)
+        return redteam.red_team(ctrl, case, llm, reviser)
+
+    n = len(rows)
+    done = 0
+    with ThreadPoolExecutor(max_workers=min(5, max(n, 1))) as pool:
+        futures = {pool.submit(one, i): i for i in range(n)}
+        for fut in as_completed(futures):
+            i = futures[fut]
+            try:
+                ctrl = fut.result()
+            except Exception as e:  # never let one case sink the package
+                print(f"WARNING: controller layer failed (case {i + 1}): {e}")
+                row = rows[i]
+                chain = scenario.chain_for(config, days[row["day"]], row["arr_raw"], fragos, tp)
+                ctrl = redteam.red_team(scenario.fallback_controller(
+                    cases[i], chain, scenario.determine_pathway(cases[i], chain)), cases[i])
+            cases[i]["controller"] = ctrl
+            counts = ctrl["red_team"]["counts"]
+            rows[i].update({
+                "pathway": ctrl["pathway"],
+                "care_chain": " → ".join(nd["name"] for nd in ctrl["chain"]["nodes"]),
+                "fragos_in_force": ", ".join(f"FRAGO {k:02d}" for k in ctrl["chain"]["fragos"]),
+                "red_team": f"{counts['high']}H/{counts['medium']}M/{counts['low']}L",
+            })
+            done += 1
+            if progress:
+                progress(done, n)
+
+
+def _package_files(config: ExerciseConfig, schedule: List[Dict], cases: List[Dict], warno: str, annex: str,
+                   medroe: str, road_to_war: str, fragos: Optional[List[Dict]]) -> List[tuple]:
+    name = config.exercise_name
+    files = [
+        (f"{name}_MSEL.xlsx", create_msel(schedule, config).getvalue()),
+        (f"{name}_WARNO.docx", create_docx("WARNING ORDER", name.upper(), warno).getvalue()),
+        (f"{name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {name.upper()}", annex).getvalue()),
+        (f"{name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", name.upper(), medroe).getvalue()),
+        (f"{name}_Case_Book.docx", create_case_book(cases, config).getvalue()),
+        (f"{name}_Road_to_War_Prompt.docx", create_docx("ROAD TO WAR — VIDEO PROMPT", name.upper(), road_to_war).getvalue()),
+    ]
+    if fragos is not None:
+        files.append((f"{name}_FRAGOs.docx", create_docx("FRAGMENTARY ORDERS", f"TO OPORD {name.upper()}",
+                                                         scenario.fragos_text(fragos, name)).getvalue()))
+    if any(c.get("controller") for c in cases):
+        files.append((f"{name}_Controller_Packet.docx",
+                      controller_docs.create_controller_packet(cases, schedule, config, fragos or []).getvalue()))
+        files.append((f"{name}_Controller_Vitals.xlsx",
+                      controller_docs.create_controller_vitals(cases, schedule, config).getvalue()))
+        files.append((f"{name}_cases.json", json.dumps(_controller_export(config, schedule, cases, fragos),
+                                                       indent=1).encode()))
+    return files
+
+
+def _controller_export(config: ExerciseConfig, schedule: List[Dict], cases: List[Dict],
+                       fragos: Optional[List[Dict]]) -> Dict:
+    """Self-contained file the live controller page loads (no server storage needed)."""
+    rows = [r for r in schedule if "arr_raw" in r]
+    return {
+        "format": "role2builder.cases.v1",
+        "exercise": config.exercise_name,
+        "generated": datetime.utcnow().isoformat() + "Z",
+        "fragos": fragos or [],
+        "cases": [{"case_num": i + 1, "day": rows[i].get("day") if i < len(rows) else None,
+                   "arrival": rows[i].get("time") if i < len(rows) else None,
+                   "event": rows[i].get("event") if i < len(rows) else None, "case": c}
+                  for i, c in enumerate(cases)],
+    }
+
+
 def _run_generation(config: ExerciseConfig, job_id: str):
     try:
         tasks = _build_case_tasks(config)
@@ -1528,9 +1650,18 @@ def _run_generation(config: ExerciseConfig, job_id: str):
             random.shuffle(p)
 
         schedule, cases = generate_schedule(config, case_pools)
+
+        # Care chain + FRAGOs → per-case decision trees, vitals tracks, red team.
+        fragos = scenario.generate_fragos(config)
+        _job_update(job_id, progress="Building decision trees + red team...")
+        _build_controller_layers(
+            config, schedule, cases, fragos,
+            lambda d, n: _job_update(job_id, progress=f"Decision trees + red team: {d} / {n}"))
+
+        _job_update(job_id, progress="Generating orders...")
         with ThreadPoolExecutor(max_workers=3) as pool:
-            f_warno = pool.submit(generate_warno, config)
-            f_annex = pool.submit(generate_annex_q, config)
+            f_warno = pool.submit(generate_warno, config, fragos)
+            f_annex = pool.submit(generate_annex_q, config, fragos)
             f_medroe = pool.submit(generate_medroe, config)
             warno = f_warno.result()
             annex = f_annex.result()
@@ -1547,7 +1678,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
             try:
                 ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases,
                               msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe,
-                              road_to_war_text=road_to_war)
+                              road_to_war_text=road_to_war, fragos=fragos)
                 db.add(ex)
                 db.commit()
             finally:
@@ -1555,12 +1686,8 @@ def _run_generation(config: ExerciseConfig, job_id: str):
 
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(schedule, config).getvalue())
-            zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), warno).getvalue())
-            zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", annex).getvalue())
-            zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), medroe).getvalue())
-            zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
-            zf.writestr(f"{config.exercise_name}_Road_to_War_Prompt.docx", create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), road_to_war).getvalue())
+            for fname, data in _package_files(config, schedule, cases, warno, annex, medroe, road_to_war, fragos):
+                zf.writestr(fname, data)
         zip_buf.seek(0)
 
         token = str(uuid.uuid4())
@@ -1681,15 +1808,12 @@ async def download_exercise(exercise_id: int):
         if isinstance(cases, str):
             cases = json.loads(cases)
 
+        road_to_war = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{config.exercise_name}_MSEL.xlsx", create_msel(msel_data, config).getvalue())
-            zf.writestr(f"{config.exercise_name}_WARNO.docx", create_docx("WARNING ORDER", config.exercise_name.upper(), ex.warno_text).getvalue())
-            zf.writestr(f"{config.exercise_name}_Annex_Q.docx", create_docx("ANNEX Q (MEDICAL SERVICES)", f"TO OPORD {config.exercise_name.upper()}", ex.annex_q_text).getvalue())
-            zf.writestr(f"{config.exercise_name}_MEDROE.docx", create_docx("MEDICAL RULES OF ENGAGEMENT", config.exercise_name.upper(), ex.medroe_text).getvalue())
-            zf.writestr(f"{config.exercise_name}_Case_Book.docx", create_case_book(cases, config).getvalue())
-            road_to_war = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
-            zf.writestr(f"{config.exercise_name}_Road_to_War_Prompt.docx", create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), road_to_war).getvalue())
+            for fname, data in _package_files(config, msel_data, cases, ex.warno_text, ex.annex_q_text,
+                                              ex.medroe_text, road_to_war, getattr(ex, "fragos", None)):
+                zf.writestr(fname, data)
         zip_buf.seek(0)
         return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
     finally:
@@ -1699,7 +1823,8 @@ async def download_exercise(exercise_id: int):
 async def download_document(exercise_id: int, doc_type: str):
     if not SessionLocal:
         raise HTTPException(status_code=404, detail="DB not configured")
-    if doc_type not in ["msel", "warno", "annex_q", "medroe", "case_book", "road_to_war"]:
+    if doc_type not in ["msel", "warno", "annex_q", "medroe", "case_book", "road_to_war", "fragos",
+                        "controller_packet", "controller_vitals", "cases_json"]:
         raise HTTPException(status_code=400, detail="Invalid doc type")
     
     db = SessionLocal()
@@ -1733,6 +1858,14 @@ async def download_document(exercise_id: int, doc_type: str):
         elif doc_type == "road_to_war":
             rtw = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
             buf, fn, mt = create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), rtw), f"{config.exercise_name}_Road_to_War_Prompt.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        elif doc_type == "fragos":
+            buf, fn, mt = create_docx("FRAGMENTARY ORDERS", f"TO OPORD {config.exercise_name.upper()}", scenario.fragos_text(ex.fragos or [], config.exercise_name)), f"{config.exercise_name}_FRAGOs.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        elif doc_type == "controller_packet":
+            buf, fn, mt = controller_docs.create_controller_packet(cases, msel_data, config, ex.fragos or []), f"{config.exercise_name}_Controller_Packet.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        elif doc_type == "controller_vitals":
+            buf, fn, mt = controller_docs.create_controller_vitals(cases, msel_data, config), f"{config.exercise_name}_Controller_Vitals.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        elif doc_type == "cases_json":
+            buf, fn, mt = BytesIO(json.dumps(_controller_export(config, msel_data, cases, ex.fragos)).encode()), f"{config.exercise_name}_cases.json", 'application/json'
         else:
             buf, fn, mt = create_case_book(cases, config), f"{config.exercise_name}_Case_Book.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         
