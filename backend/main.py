@@ -1,5 +1,4 @@
 import os
-import re
 import random
 import json
 import zipfile
@@ -14,8 +13,7 @@ from fastapi import FastAPI, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Text, Boolean, UniqueConstraint
-from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Text
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -68,32 +66,6 @@ class Job(Base):
     token = Column(String, nullable=True)
     filename = Column(String, nullable=True)
     error = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class CaseReview(Base):
-    """Expert review state for one case of a stored exercise."""
-    __tablename__ = "case_reviews"
-    __table_args__ = (UniqueConstraint("exercise_id", "case_index", name="uq_case_review"),)
-    id = Column(Integer, primary_key=True)
-    exercise_id = Column(Integer, index=True, nullable=False)
-    case_index = Column(Integer, nullable=False)
-    status = Column(String, default="auto_checked")  # auto_checked | in_review | changes_requested | approved
-    reviewer = Column(String, nullable=True)
-    note = Column(Text, nullable=True)
-    decided_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow)
-
-class ReviewComment(Base):
-    """A reviewer comment pinned to part of a case (leg/node, vitals cell, wounds, general)."""
-    __tablename__ = "review_comments"
-    id = Column(Integer, primary_key=True)
-    exercise_id = Column(Integer, index=True, nullable=False)
-    case_index = Column(Integer, nullable=False)
-    target = Column(String, default="general")
-    author = Column(String, nullable=False)
-    body = Column(Text, nullable=False)
-    severity = Column(String, default="medium")
-    resolved = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 from sqlalchemy import text as _sql_text
@@ -1329,8 +1301,8 @@ def create_msel(schedule: List[Dict], config: ExerciseConfig) -> BytesIO:
     # Sheet 2 — T&EO / Controller detail (per-casualty, straight from the case).
     teo = _sheet(
         raw,
-        ['day', 'time', 'cleared', 'pace_state', 'pace_driver', 'r2_census', 'zap', 'triage_cat', 'pathway', 'care_chain', 'fragos_in_force', 'red_team', 'care_level', 'surgical', 'blood_units', 'blood_tier', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
-        ['Day', 'Arrival', 'R2 Cleared', 'PACE', 'PACE Trigger', 'R2 Census', 'ZAP #', 'Triage', 'Pathway', 'Care Chain', 'FRAGOs', 'Red Team', 'Care Level', 'Surgical', 'Blood (WBE u)', 'Blood Tier', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
+        ['day', 'time', 'cleared', 'pace_state', 'pace_driver', 'r2_census', 'zap', 'triage_cat', 'pathway', 'care_chain', 'fragos_in_force', 'care_level', 'surgical', 'blood_units', 'blood_tier', 'r2_dwell', 'disposition', 'signs', 'onward', 'handover', 'expected', 'contingencies', 'debrief', 'evaluator'],
+        ['Day', 'Arrival', 'R2 Cleared', 'PACE', 'PACE Trigger', 'R2 Census', 'ZAP #', 'Triage', 'Pathway', 'Care Chain', 'FRAGOs', 'Care Level', 'Surgical', 'Blood (WBE u)', 'Blood Tier', 'R2 Dwell (min)', 'Disposition', 'Initial Signs', 'Onward Tpt', 'Handover', 'Expected Key Actions', 'Contingencies (If/Then)', 'Debrief Prompts', 'Evaluator'],
     )
 
     # Sheet 3 — Blood Ledger (chronological running consumption vs LTOWB stock).
@@ -1573,16 +1545,18 @@ def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases
         chain = scenario.chain_for(config, day, row["arr_raw"], fragos, tp)
         pathway = scenario.determine_pathway(case, chain)
         in_force = [f for f in fragos if f["number"] in chain["fragos"]]
-        llm = reviser = None
+        maritime = scenario._is_maritime(config, day)
+        generate = lambda: scenario.generate_controller(case, chain, pathway, in_force, maritime, _llm_json)
+        template = lambda: scenario.fallback_controller(case, chain, pathway)
         try:
-            ctrl = scenario.generate_controller(case, chain, pathway, in_force,
-                                                scenario._is_maritime(config, day), _llm_json)
-            llm = _llm_json
-            reviser = lambda c, f: scenario.revise_controller(c, f, _llm_json)
+            first = generate()
         except Exception as e:
             print(f"WARNING: controller layer generation failed (case {i + 1}): {e} — using template")
-            ctrl = scenario.fallback_controller(case, chain, pathway)
-        return redteam.red_team(ctrl, case, llm, reviser)
+            return redteam.finalize(template(), case, fallback=template, source="template")
+        # Red team → fix → re-check until clean; regenerate once; template last.
+        return redteam.finalize(first, case, llm=_llm_json,
+                                revise=lambda c, f: scenario.revise_controller(c, f, _llm_json),
+                                regenerate=generate, fallback=template)
 
     n = len(rows)
     done = 0
@@ -1596,15 +1570,13 @@ def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases
                 print(f"WARNING: controller layer failed (case {i + 1}): {e}")
                 row = rows[i]
                 chain = scenario.chain_for(config, days[row["day"]], row["arr_raw"], fragos, tp)
-                ctrl = redteam.red_team(scenario.fallback_controller(
-                    cases[i], chain, scenario.determine_pathway(cases[i], chain)), cases[i])
+                ctrl = redteam.finalize(scenario.fallback_controller(
+                    cases[i], chain, scenario.determine_pathway(cases[i], chain)), cases[i], source="template")
             cases[i]["controller"] = ctrl
-            counts = ctrl["red_team"]["counts"]
             rows[i].update({
                 "pathway": ctrl["pathway"],
                 "care_chain": " → ".join(nd["name"] for nd in ctrl["chain"]["nodes"]),
                 "fragos_in_force": ", ".join(f"FRAGO {k:02d}" for k in ctrl["chain"]["fragos"]),
-                "red_team": f"{counts['high']}H/{counts['medium']}M/{counts['low']}L",
             })
             done += 1
             if progress:
@@ -1685,10 +1657,10 @@ def _run_generation(config: ExerciseConfig, job_id: str):
 
         # Care chain + FRAGOs → per-case decision trees, vitals tracks, red team.
         fragos = scenario.generate_fragos(config)
-        _job_update(job_id, progress="Building decision trees + red team...")
+        _job_update(job_id, progress="Building decision trees (red team + fixes)...")
         _build_controller_layers(
             config, schedule, cases, fragos,
-            lambda d, n: _job_update(job_id, progress=f"Decision trees + red team: {d} / {n}"))
+            lambda d, n: _job_update(job_id, progress=f"Decision trees (red-teamed and fixed): {d} / {n}"))
 
         _job_update(job_id, progress="Generating orders...")
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -1724,6 +1696,9 @@ def _run_generation(config: ExerciseConfig, job_id: str):
 
         token = str(uuid.uuid4())
         _packages[token] = {"data": zip_buf.getvalue(), "ts": datetime.utcnow()}
+        templated = sum(1 for c in cases if (c.get("controller") or {}).get("quality", {}).get("source") == "template")
+        if templated:
+            print(f"WARNING: {templated}/{total} controller layers shipped as the pathway template")
         done_msg = "Package ready!" if not fallback_count else (
             f"Package ready — NOTE: {fallback_count} of {total} cases used the offline "
             f"fallback template (AI generation failed); review the case book before use.")
@@ -1839,8 +1814,6 @@ async def download_exercise(exercise_id: int):
         cases = ex.cases
         if isinstance(cases, str):
             cases = json.loads(cases)
-        cases = json.loads(json.dumps(cases or []))  # detached copy; review info is added for print only
-        _attach_reviews(db, exercise_id, cases)
 
         road_to_war = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
         zip_buf = BytesIO()
@@ -1880,8 +1853,6 @@ async def download_document(exercise_id: int, doc_type: str):
         cases = ex.cases
         if isinstance(cases, str):
             cases = json.loads(cases)
-        cases = json.loads(json.dumps(cases or []))  # detached copy; review info is added for print only
-        _attach_reviews(db, exercise_id, cases)
 
         if doc_type == "msel":
             buf, fn, mt = create_msel(msel_data, config), f"{config.exercise_name}_MSEL.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -1906,284 +1877,5 @@ async def download_document(exercise_id: int, doc_type: str):
             buf, fn, mt = create_case_book(cases, config), f"{config.exercise_name}_Case_Book.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         
         return Response(buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{fn}"'}, media_type=mt)
-    finally:
-        db.close()
-
-# --- Expert review (requires DATABASE_URL) --------------------------------
-# Cases arrive "auto_checked" from the red team. Reviewers comment on specific
-# parts of a case, may edit its controller layer (which re-runs the rules red
-# team), and record a decision. Approved cases form the scenario library.
-
-REVIEW_STATUSES = ("auto_checked", "in_review", "changes_requested", "approved")
-
-
-class CommentIn(BaseModel):
-    author: str = Field(min_length=1, max_length=120)
-    body: str = Field(min_length=1, max_length=8000)
-    target: str = Field(default="general", max_length=200)
-    severity: str = Field(default="medium", pattern="^(high|medium|low)$")
-
-
-class CommentPatch(BaseModel):
-    resolved: bool
-
-
-class DecisionIn(BaseModel):
-    reviewer: str = Field(min_length=1, max_length=120)
-    status: str = Field(pattern="^(in_review|changes_requested|approved)$")
-    note: Optional[str] = Field(default=None, max_length=8000)
-    acknowledge_findings: bool = False
-
-
-class ControllerEdit(BaseModel):
-    author: str = Field(min_length=1, max_length=120)
-    controller: Dict[str, Any]
-    summary: Optional[str] = Field(default=None, max_length=2000)
-
-
-def _review_db():
-    if not SessionLocal:
-        raise HTTPException(status_code=503, detail="Review storage is not configured on this server (no DATABASE_URL).")
-    return SessionLocal()
-
-
-def _load_exercise(db, exercise_id: int) -> "Exercise":
-    ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
-    if not ex:
-        raise HTTPException(status_code=404, detail="Exercise not found")
-    return ex
-
-
-def _cases_of(ex) -> List[Dict]:
-    cases = ex.cases or []
-    return json.loads(cases) if isinstance(cases, str) else cases
-
-
-def _get_review(db, exercise_id: int, idx: int, create: bool = False):
-    rv = db.query(CaseReview).filter(CaseReview.exercise_id == exercise_id, CaseReview.case_index == idx).first()
-    if rv is None and create:
-        rv = CaseReview(exercise_id=exercise_id, case_index=idx, status="auto_checked")
-        db.add(rv)
-        db.flush()
-    return rv
-
-
-def _review_dict(rv) -> Dict:
-    if rv is None:
-        return {"status": "auto_checked", "reviewer": None, "note": None, "decided_at": None}
-    return {"status": rv.status, "reviewer": rv.reviewer, "note": rv.note,
-            "decided_at": rv.decided_at.isoformat() if rv.decided_at else None,
-            "updated_at": rv.updated_at.isoformat() if rv.updated_at else None}
-
-
-def _comment_dict(c) -> Dict:
-    return {"id": c.id, "target": c.target, "author": c.author, "body": c.body, "severity": c.severity,
-            "resolved": bool(c.resolved), "created_at": c.created_at.isoformat() if c.created_at else None}
-
-
-def _attach_reviews(db, exercise_id: int, cases: List[Dict]) -> None:
-    """Copy review decisions onto the in-memory cases so packets print sign-off."""
-    for rv in db.query(CaseReview).filter(CaseReview.exercise_id == exercise_id).all():
-        if 0 <= rv.case_index < len(cases) and isinstance(cases[rv.case_index].get("controller"), dict):
-            cases[rv.case_index]["controller"]["review"] = _review_dict(rv)
-
-
-@app.get("/reviews/status")
-async def review_status():
-    return {"enabled": SessionLocal is not None}
-
-
-@app.get("/exercises/{exercise_id}/review")
-async def review_overview(exercise_id: int):
-    db = _review_db()
-    try:
-        ex = _load_exercise(db, exercise_id)
-        cases = _cases_of(ex)
-        reviews = {r.case_index: r for r in db.query(CaseReview).filter(CaseReview.exercise_id == exercise_id)}
-        open_counts: Dict[int, int] = {}
-        for c in db.query(ReviewComment).filter(ReviewComment.exercise_id == exercise_id,
-                                                ReviewComment.resolved.is_(False)):
-            open_counts[c.case_index] = open_counts.get(c.case_index, 0) + 1
-        rows = [r for r in (ex.msel_data or []) if isinstance(r, dict) and "arr_raw" in r]
-        out = []
-        for i, case in enumerate(cases):
-            ctrl = case.get("controller") or {}
-            out.append({
-                "index": i, "case_num": i + 1, "title": (case.get("meta") or {}).get("title"),
-                "zap": (case.get("zmist") or {}).get("zap"), "pathway": ctrl.get("pathway"),
-                "day": rows[i].get("day") if i < len(rows) else None,
-                "arrival": rows[i].get("time") if i < len(rows) else None,
-                "red_team": (ctrl.get("red_team") or {}).get("counts"),
-                "has_controller": bool(ctrl), "open_comments": open_counts.get(i, 0),
-                **_review_dict(reviews.get(i)),
-            })
-        return {"exercise": {"id": ex.id, "name": ex.name}, "cases": out}
-    finally:
-        db.close()
-
-
-@app.get("/exercises/{exercise_id}/review/{idx}")
-async def review_case(exercise_id: int, idx: int):
-    db = _review_db()
-    try:
-        ex = _load_exercise(db, exercise_id)
-        cases = _cases_of(ex)
-        if not 0 <= idx < len(cases):
-            raise HTTPException(status_code=404, detail="Case not found")
-        comments = (db.query(ReviewComment)
-                    .filter(ReviewComment.exercise_id == exercise_id, ReviewComment.case_index == idx)
-                    .order_by(ReviewComment.created_at).all())
-        return {"exercise": {"id": ex.id, "name": ex.name, "fragos": ex.fragos or []}, "index": idx,
-                "case": cases[idx], "review": _review_dict(_get_review(db, exercise_id, idx)),
-                "comments": [_comment_dict(c) for c in comments]}
-    finally:
-        db.close()
-
-
-@app.post("/exercises/{exercise_id}/review/{idx}/comments")
-async def add_comment(exercise_id: int, idx: int, body: CommentIn):
-    db = _review_db()
-    try:
-        ex = _load_exercise(db, exercise_id)
-        if not 0 <= idx < len(_cases_of(ex)):
-            raise HTTPException(status_code=404, detail="Case not found")
-        c = ReviewComment(exercise_id=exercise_id, case_index=idx, target=body.target, author=body.author.strip(),
-                          body=body.body, severity=body.severity)
-        db.add(c)
-        rv = _get_review(db, exercise_id, idx, create=True)
-        if rv.status == "auto_checked":
-            rv.status = "in_review"
-        rv.updated_at = datetime.utcnow()
-        db.commit()
-        return _comment_dict(c)
-    finally:
-        db.close()
-
-
-@app.patch("/exercises/{exercise_id}/review/{idx}/comments/{comment_id}")
-async def patch_comment(exercise_id: int, idx: int, comment_id: int, body: CommentPatch):
-    db = _review_db()
-    try:
-        c = db.query(ReviewComment).filter(ReviewComment.id == comment_id, ReviewComment.exercise_id == exercise_id,
-                                           ReviewComment.case_index == idx).first()
-        if not c:
-            raise HTTPException(status_code=404, detail="Comment not found")
-        c.resolved = body.resolved
-        db.commit()
-        return _comment_dict(c)
-    finally:
-        db.close()
-
-
-@app.put("/exercises/{exercise_id}/review/{idx}/controller")
-async def edit_controller(exercise_id: int, idx: int, body: ControllerEdit):
-    """Save a reviewer's edit of the controller layer, re-run the rules red team,
-    and send the case back to in_review (an edit invalidates any approval)."""
-    db = _review_db()
-    try:
-        ex = _load_exercise(db, exercise_id)
-        cases = [dict(c) for c in _cases_of(ex)]
-        if not 0 <= idx < len(cases):
-            raise HTTPException(status_code=404, detail="Case not found")
-        old = cases[idx].get("controller") or {}
-        chain, pathway = old.get("chain"), body.controller.get("pathway") or old.get("pathway")
-        if not chain or not pathway:
-            raise HTTPException(status_code=400, detail="Case has no controller layer to edit")
-        if pathway not in scenario.PATHWAYS:
-            raise HTTPException(status_code=400, detail=f"Unknown pathway {pathway}")
-        try:
-            ctrl = scenario.normalize_controller(
-                {k: v for k, v in body.controller.items() if k not in ("chain", "red_team", "review")}, chain, pathway)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Controller layer is malformed: {e}")
-        ctrl = redteam.red_team(ctrl, cases[idx])  # rules only — the reviewer is the critic now
-        ctrl["red_team"]["status"] = "expert_edited"
-        cases[idx]["controller"] = ctrl
-        ex.cases = cases
-        flag_modified(ex, "cases")
-        rv = _get_review(db, exercise_id, idx, create=True)
-        rv.status, rv.decided_at, rv.updated_at = "in_review", None, datetime.utcnow()
-        db.add(ReviewComment(exercise_id=exercise_id, case_index=idx, target="general", author=body.author.strip(),
-                             body=f"Edited the controller layer. {body.summary or ''}".strip(), severity="low",
-                             resolved=True))
-        db.commit()
-        return {"controller": ctrl, "review": _review_dict(rv)}
-    finally:
-        db.close()
-
-
-@app.post("/exercises/{exercise_id}/review/{idx}/decision")
-async def decide(exercise_id: int, idx: int, body: DecisionIn):
-    db = _review_db()
-    try:
-        ex = _load_exercise(db, exercise_id)
-        cases = _cases_of(ex)
-        if not 0 <= idx < len(cases):
-            raise HTTPException(status_code=404, detail="Case not found")
-        if body.status == "approved":
-            open_high = db.query(ReviewComment).filter(
-                ReviewComment.exercise_id == exercise_id, ReviewComment.case_index == idx,
-                ReviewComment.resolved.is_(False), ReviewComment.severity == "high").count()
-            if open_high:
-                raise HTTPException(status_code=409, detail=f"{open_high} unresolved high-severity comment(s) — resolve them before approving.")
-            rt_high = ((cases[idx].get("controller") or {}).get("red_team") or {}).get("counts", {}).get("high", 0)
-            if rt_high and not body.acknowledge_findings:
-                raise HTTPException(status_code=409, detail=f"{rt_high} high-severity red-team finding(s) are still open. Fix them, or confirm you have reviewed them.")
-        rv = _get_review(db, exercise_id, idx, create=True)
-        rv.status, rv.reviewer, rv.note = body.status, body.reviewer.strip(), body.note
-        rv.decided_at = datetime.utcnow() if body.status in ("approved", "changes_requested") else None
-        rv.updated_at = datetime.utcnow()
-        db.commit()
-        return _review_dict(rv)
-    finally:
-        db.close()
-
-
-@app.get("/library")
-async def library():
-    """Approved cases across all exercises — the reusable scenario library."""
-    if not SessionLocal:
-        return {"enabled": False, "cases": []}
-    db = SessionLocal()
-    try:
-        approved = db.query(CaseReview).filter(CaseReview.status == "approved").order_by(CaseReview.decided_at.desc()).all()
-        by_ex: Dict[int, Any] = {}
-        out = []
-        for rv in approved:
-            ex = by_ex.get(rv.exercise_id) or db.query(Exercise).filter(Exercise.id == rv.exercise_id).first()
-            if not ex:
-                continue
-            by_ex[rv.exercise_id] = ex
-            cases = _cases_of(ex)
-            if not 0 <= rv.case_index < len(cases):
-                continue
-            case = cases[rv.case_index]
-            out.append({"exercise_id": ex.id, "exercise": ex.name, "index": rv.case_index,
-                        "title": (case.get("meta") or {}).get("title"),
-                        "mechanism": (case.get("zmist") or {}).get("mechanism"),
-                        "pathway": (case.get("controller") or {}).get("pathway"),
-                        "triage": case.get("triage_category"), "reviewer": rv.reviewer,
-                        "decided_at": rv.decided_at.isoformat() if rv.decided_at else None})
-        return {"enabled": True, "cases": out}
-    finally:
-        db.close()
-
-
-@app.get("/library/{exercise_id}/{idx}")
-async def library_case(exercise_id: int, idx: int):
-    db = _review_db()
-    try:
-        rv = _get_review(db, exercise_id, idx)
-        if not rv or rv.status != "approved":
-            raise HTTPException(status_code=404, detail="Not an approved case")
-        ex = _load_exercise(db, exercise_id)
-        case = dict(_cases_of(ex)[idx])
-        if isinstance(case.get("controller"), dict):
-            case["controller"] = {**case["controller"], "review": _review_dict(rv)}
-        payload = {"format": "role2builder.cases.v1", "exercise": ex.name, "fragos": ex.fragos or [],
-                   "cases": [{"case_num": idx + 1, "case": case}]}
-        fn = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{ex.name}_case{idx + 1}_approved") + ".json"
-        return Response(json.dumps(payload, indent=1), media_type="application/json",
-                        headers={"Content-Disposition": f'attachment; filename="{fn}"'})
     finally:
         db.close()

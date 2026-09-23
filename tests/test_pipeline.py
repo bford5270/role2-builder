@@ -7,7 +7,7 @@ import zipfile
 
 import pytest
 
-from backend import main, scenario
+from backend import main, redteam, scenario
 
 
 def _config(**over):
@@ -31,14 +31,18 @@ def _fake_llm(prompt, system):
         legs = json.loads(prompt.split("CARE CHAIN LEGS (build one tree per leg, same ids):\n")[1].split("\nFOCUS LEG")[0])
         chain = {"nodes": [], "legs": [{"id": l["leg_id"], "title": l["title"], "capability": l["capability"],
                                         "focus": l["focus"], "from": "", "to": ""} for l in legs]}
-        ctrl = scenario.fallback_controller({}, chain, "DCR_HOLD")
+        pathway = prompt.split("PATHWAY: ", 1)[1].split(" ", 1)[0]
+        ctrl = scenario.fallback_controller({}, chain, pathway)
         ctrl.pop("_fallback")
-        ctrl["moulage"] = "Confused, GCS 9 (E3, V3, M4)"  # planted: 3+3+4=10
+        ctrl["moulage"] = "Alert, GCS 14 (E4, V5, M6)"  # planted: 4+5+6=15
         return json.dumps(ctrl)
     if "red team" in system:
         return json.dumps({"findings": [{"severity": "low", "category": "clinical", "location": "x",
                                          "issue": "stub", "fix": "stub"}]})
-    return json.dumps({})  # revision: forces the "keep original" branch
+    # Revision: fix what was flagged (the planted GCS error).
+    layer = json.loads(prompt.split("CURRENT CONTROLLER LAYER:\n", 1)[1])
+    layer["moulage"] = "Alert, GCS 15 (E4, V5, M6)"
+    return json.dumps(layer)
 
 
 def test_chain_follows_fragos():
@@ -99,8 +103,35 @@ def test_full_package(monkeypatch, ai):
     for c in export["cases"]:
         ctrl = c["case"]["controller"]
         assert ctrl["legs"] and ctrl["vitals_tracks"]["green"]
-        assert ctrl["red_team"]["status"] == "auto_checked"
+        assert "red_team" not in ctrl and "_fallback" not in ctrl  # final draft: no findings shipped
+        assert not redteam._blocking(redteam.run_rules(ctrl, c["case"]))
         if ai:
-            assert any(f["category"] == "gcs" for f in ctrl["red_team"]["open"])  # planted error caught
+            assert ctrl["quality"]["source"] == "ai"
+            assert ctrl["moulage"] == "Alert, GCS 15 (E4, V5, M6)"  # planted error fixed, not reported
         else:
-            assert ctrl.get("_fallback")
+            assert ctrl["quality"]["source"] == "template"
+
+
+def test_unfixable_layer_regenerates_then_falls_back_to_template():
+    import json as _json
+    fix = _json.loads((__import__("pathlib").Path(__file__).parent / "fixtures" / "erss_ship_sim_dcs.json").read_text())
+    broken, case = fix["controller"], fix["case"]
+    calls = {"regen": 0}
+
+    def regenerate():
+        calls["regen"] += 1
+        return _json.loads(_json.dumps(broken))
+
+    template = lambda: scenario.fallback_controller(case, broken["chain"], "DCR_DCS")
+    out = redteam.finalize(broken, case, revise=lambda c, f: c, regenerate=regenerate, fallback=template)
+    assert calls["regen"] == 1
+    assert out["quality"]["source"] == "template"
+    assert not redteam._blocking(redteam.run_rules(out, case))
+
+
+def test_deterministic_fixes_clean_the_reference_where_no_judgment_is_needed():
+    import json as _json
+    fix = _json.loads((__import__("pathlib").Path(__file__).parent / "fixtures" / "erss_ship_sim_dcs.json").read_text())
+    fixed = redteam.autofix(fix["controller"], fix["case"])
+    cats = {f["category"] for f in redteam.run_rules(fixed, fix["case"])}
+    assert "template" not in cats and "handover" not in cats  # burns leftover + turnover vitals repaired

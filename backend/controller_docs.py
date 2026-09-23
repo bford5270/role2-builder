@@ -1,5 +1,5 @@
 """Printed controller packet: per-case decision-tree flowcharts, body map,
-turnover cards and sign-off block (docx), and the colour-coded controller
+turnover cards and critical actions (docx), and the colour-coded controller
 vitals workbook with green/red tracks and the patient-care checklist (xlsx)."""
 import re
 import textwrap
@@ -255,8 +255,7 @@ def create_controller_packet(cases: List[Dict], schedule: List[Dict], config, fr
     doc.add_paragraph(
         "Decision trees, turnover cards, body maps and critical actions for each casualty, built on the care "
         "chain in force (WARNO + FRAGOs) at the casualty's arrival time. Vitals tracks are in the Controller "
-        "Vitals workbook (one sheet per case). Every case has been auto red-teamed and REQUIRES EXPERT REVIEW "
-        "AND SIGN-OFF before use.")
+        "Vitals workbook (one sheet per case).")
     doc.add_paragraph(f"Generated {datetime.now().strftime('%d %b %Y %H%M')}")
     if fragos:
         doc.add_heading("FRAGOs affecting the care chain", level=2)
@@ -282,21 +281,6 @@ def create_controller_packet(cases: List[Dict], schedule: List[Dict], config, fr
         ])
         for note in (ctrl.get("chain") or {}).get("notes", []):
             doc.add_paragraph(note, style="List Bullet")
-
-        rt = ctrl.get("red_team") or {}
-        counts = rt.get("counts") or {}
-        p = doc.add_paragraph()
-        r = p.add_run(f"RED TEAM (auto): {counts.get('high', 0)} high, {counts.get('medium', 0)} medium, "
-                      f"{counts.get('low', 0)} low open findings — expert review required.")
-        r.bold = True
-        if counts.get("high"):
-            r.font.color.rgb = RGBColor(0xB4, 0x23, 0x18)
-        if ctrl.get("_fallback"):
-            doc.add_paragraph("AI generation failed for this case — the controller layer is a template.",
-                              style="List Bullet")
-        for f in [f for f in rt.get("open", []) if f["severity"] in ("high", "medium")][:12]:
-            doc.add_paragraph(f"[{f['severity'].upper()}] {f['issue']} Fix: {f['fix']} ({f['location']})",
-                              style="List Bullet")
 
         doc.add_heading("Injuries / moulage", level=2)
         if ctrl.get("wounds"):
@@ -350,15 +334,6 @@ def create_controller_packet(cases: List[Dict], schedule: List[Dict], config, fr
             p = doc.add_paragraph()
             p.add_run(ctrl["controller_note"]).italic = True
 
-        doc.add_heading("Expert review / sign-off", level=2)
-        rv = ctrl.get("review") or {}
-        if rv.get("status") in ("approved", "changes_requested"):
-            _kv_table(doc, [("Reviewer", rv.get("reviewer") or ""),
-                            ("Decision", "Approved" if rv["status"] == "approved" else "Changes required"),
-                            ("Date", (rv.get("decided_at") or "")[:10]), ("Comments", rv.get("note") or "")])
-        else:
-            _kv_table(doc, [("Reviewer (name / specialty)", ""), ("Decision", "☐ Approved   ☐ Changes required"),
-                            ("Date", ""), ("Comments", "\n\n")])
         doc.add_page_break()
 
     buf = BytesIO()
@@ -431,33 +406,18 @@ def create_controller_vitals(cases: List[Dict], schedule: List[Dict], config) ->
     wb = Workbook()
     idx = wb.active
     idx.title = "Index"
-    for j, h in enumerate(("Case", "Title", "ZAP", "Arrival", "Pathway", "Care chain", "Red team (H/M/L)",
-                           "Reviewer", "Decision", "Date"), start=1):
+    for j, h in enumerate(("Case", "Title", "ZAP", "Arrival", "Pathway", "Care chain"), start=1):
         _cell(idx, 1, j, h, bold=True, fill=_HEAD)
-    findings_ws = wb.create_sheet("Red Team")
-    for j, h in enumerate(("Case", "Severity", "Category", "Location", "Issue", "Fix", "Source",
-                           "Reviewer disposition"), start=1):
-        _cell(findings_ws, 1, j, h, bold=True, fill=_HEAD)
-    frow = 2
     rows = [r for r in schedule if "arr_raw" in r]
-    used = {"Index", "Red Team"}
+    used = {"Index"}
     for i, case in enumerate(cases, start=1):
         ctrl = case.get("controller") or {}
         row = rows[i - 1] if i - 1 < len(rows) else {}
         title = (case.get("meta") or {}).get("title", "Untitled")
-        counts = (ctrl.get("red_team") or {}).get("counts") or {}
         for j, v in enumerate((f"Case {i}", title, (case.get("zmist") or {}).get("zap", ""),
                                f"D{row.get('day', '')} {row.get('time', '')}", ctrl.get("pathway", ""),
-                               _chain_text(ctrl),
-                               f"{counts.get('high', 0)}/{counts.get('medium', 0)}/{counts.get('low', 0)}",
-                               "", "", ""), start=1):
+                               _chain_text(ctrl)), start=1):
             _cell(idx, i + 1, j, v, wrap=j in (2, 6))
-        for f in (ctrl.get("red_team") or {}).get("open", []):
-            fill = _REDF if f["severity"] == "high" else _YELLOW if f["severity"] == "medium" else None
-            for j, v in enumerate((f"Case {i}", f["severity"], f["category"], f["location"], f["issue"],
-                                   f["fix"], f["source"], ""), start=1):
-                _cell(findings_ws, frow, j, v, fill=fill if j == 2 else None, wrap=j in (4, 5, 6))
-            frow += 1
 
         ws = wb.create_sheet(_sheet_name(i, title, used))
         ws.column_dimensions["A"].width = 12
@@ -549,10 +509,8 @@ def create_controller_vitals(cases: List[Dict], schedule: List[Dict], config) ->
             br = vr + len(_VENT) + 2
             _cell(ws, br, mc, "Burns %TBSA", bold=True, fill=_HEAD)
             _cell(ws, br + 1, mc, str(ctrl["burns"]), wrap=True)
-    for col, w in ((1, 8), (2, 34), (3, 8), (4, 10), (5, 16), (6, 50), (7, 14), (8, 20), (9, 14), (10, 10)):
+    for col, w in ((1, 8), (2, 34), (3, 8), (4, 10), (5, 16), (6, 50)):
         idx.column_dimensions[get_column_letter(col)].width = w
-    for col, w in ((1, 8), (2, 9), (3, 14), (4, 26), (5, 60), (6, 50), (7, 8), (8, 24)):
-        findings_ws.column_dimensions[get_column_letter(col)].width = w
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)

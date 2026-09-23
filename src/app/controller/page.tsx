@@ -129,7 +129,6 @@ export default function ControllerPage() {
   const [caseIdx, setCaseIdx] = useState(0);
   const [legId, setLegId] = useState<string | null>(null);
   const [sim, dispatch] = useReducer(reducer, undefined, initialSim);
-  const [showFindings, setShowFindings] = useState(false);
 
   // ?exercise=<id> loads a stored exercise; otherwise the user loads cases.json.
   useEffect(() => {
@@ -234,10 +233,9 @@ export default function ControllerPage() {
             className="w-full bg-surface-1 border border-border-1 rounded px-3 py-2 text-sm"
           >
             {data.cases.map((c, i) => {
-              const k = c.case.controller?.red_team?.counts || {};
               return (
                 <option key={i} value={i}>
-                  Case {c.case_num} · D{c.day ?? '?'} {c.arrival ?? ''} · {c.case.meta?.title} · {PATHWAY_LABELS[c.case.controller?.pathway || ''] || 'no controller layer'} · red team {k.high ?? 0}H/{k.medium ?? 0}M
+                  Case {c.case_num} · D{c.day ?? '?'} {c.arrival ?? ''} · {c.case.meta?.title} · {PATHWAY_LABELS[c.case.controller?.pathway || ''] || 'no controller layer'}
                 </option>
               );
             })}
@@ -388,18 +386,6 @@ export default function ControllerPage() {
                   <ul className="list-disc ml-5 text-ink-2">{ctrl.wounds.map(w => (
                     <li key={w.id}>{w.side} {w.region} ({w.surface}): {w.type} — {w.intervention}{w.effective === false ? ' (ineffective)' : ''}</li>
                   ))}</ul>
-                )}
-                <button onClick={() => setShowFindings(v => !v)} className="text-accent hover:text-accent-hover text-xs">
-                  {showFindings ? 'Hide' : 'Show'} red-team findings ({ctrl.red_team?.open.length ?? 0})
-                </button>
-                {showFindings && (
-                  <ul className="space-y-1 text-xs">
-                    {(ctrl.red_team?.open || []).map((f, i) => (
-                      <li key={i} className={f.severity === 'high' ? 'text-signal-red' : f.severity === 'medium' ? 'text-signal-amber' : 'text-ink-3'}>
-                        [{f.severity}] {f.issue} <span className="text-ink-3">Fix: {f.fix}</span>
-                      </li>
-                    ))}
-                  </ul>
                 )}
               </div>
               <div className="bg-surface-1 border border-border-1 rounded p-4 text-sm">

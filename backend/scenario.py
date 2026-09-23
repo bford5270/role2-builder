@@ -421,7 +421,7 @@ def generate_controller(case: Dict, chain: Dict, pathway: str, fragos_in_force: 
 
 
 def revise_controller(ctrl: Dict, findings: List[Dict], llm: Callable[[str, str], str]) -> Dict:
-    body = {k: v for k, v in ctrl.items() if k not in ("chain", "pathway", "focus_leg", "red_team")}
+    body = {k: v for k, v in ctrl.items() if k not in ("chain", "pathway", "focus_leg", "quality")}
     prompt = ("FINDINGS TO FIX:\n" + json.dumps(findings, indent=1)
               + "\n\nCURRENT CONTROLLER LAYER:\n" + json.dumps(body, indent=1))
     revised = _parse_json(llm(prompt, REVISE_SYSTEM_PROMPT))

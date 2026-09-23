@@ -54,15 +54,6 @@ export interface CriticalAction {
   rejoin?: string;
 }
 
-export interface Finding {
-  severity: 'high' | 'medium' | 'low';
-  category: string;
-  location: string;
-  issue: string;
-  fix: string;
-  source: string;
-}
-
 export interface Controller {
   pathway: string;
   chain: { nodes: { id: string; name: string; capability: string[] }[]; fragos: number[]; notes: string[] };
@@ -74,8 +65,7 @@ export interface Controller {
   vitals_tracks: { green: Vitals[]; red: Vitals[] };
   controller_note?: string;
   focus_leg: string;
-  red_team?: { counts: Record<string, number>; open: Finding[]; status: string };
-  _fallback?: boolean;
+  quality?: { source: string; rounds: number };
 }
 
 export interface CaseRecord {

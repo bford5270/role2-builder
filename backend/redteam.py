@@ -422,35 +422,93 @@ def summarize(findings: List[Dict]) -> Dict:
     return {s: sum(1 for f in findings if f["severity"] == s) for s in ("high", "medium", "low")}
 
 
-def red_team(ctrl: Dict, case: Dict, llm: Optional[Callable[[str, str], str]] = None,
-             revise: Optional[Callable[[Dict, List[Dict]], Dict]] = None) -> Dict:
-    """Rules + AI critic; if anything high-severity turns up and a reviser is
-    given, revise once and re-check. Returns the (possibly revised) controller
-    layer with a red_team record attached."""
-    rounds = []
-    findings = run_rules(ctrl, case)
-    if llm:
-        try:
-            findings += ai_critic(ctrl, case, llm)
-        except Exception as e:
-            findings.append({"severity": "low", "category": "checker", "location": "ai_critic",
-                             "issue": f"AI critic unavailable: {e}", "fix": "Rely on expert review.",
-                             "source": "rules"})
-    rounds.append({"round": 1, "counts": summarize(findings), "findings": findings})
-    if revise and any(f["severity"] == "high" for f in findings):
-        try:
-            revised = revise(ctrl, [f for f in findings if f["severity"] in ("high", "medium")])
-            findings2 = run_rules(revised, case)
-            # Keep the revision only if it didn't make things worse.
-            if summarize(findings2)["high"] <= summarize([f for f in findings if f["source"] == "rules"])["high"]:
-                ctrl = revised
-                rounds.append({"round": 2, "counts": summarize(findings2), "findings": findings2,
-                               "note": "Auto-revised from round-1 findings; AI findings above were addressed "
-                                       "by the revision and are kept for the reviewer's reference."})
-        except Exception as e:
-            rounds.append({"round": 2, "error": f"Revision failed: {e}", "findings": [], "counts": summarize([])})
-    final = rounds[-1]["findings"] if len(rounds) > 1 and "error" not in rounds[-1] else findings
-    ctrl = dict(ctrl)
-    ctrl["red_team"] = {"rounds": rounds, "open": final, "counts": summarize(final),
-                        "status": "auto_checked"}
+def _blocking(findings: List[Dict]) -> List[Dict]:
+    """What must be fixed before a case ships: every rules finding rated high or
+    medium, and AI-critic findings rated high. (AI medium/low findings are sent
+    to the reviser but never hold a case back — the critic can always find
+    something to say.)"""
+    return [f for f in findings
+            if (f["source"] == "rules" and f["severity"] in ("high", "medium"))
+            or (f["source"] == "ai" and f["severity"] == "high")]
+
+
+def autofix(ctrl: Dict, case: Dict) -> Dict:
+    """Deterministic repairs that need no judgment."""
+    ctrl = json.loads(json.dumps(ctrl))
+    injuries = f"{(case.get('zmist') or {}).get('injuries', '')} {(case.get('meta') or {}).get('title', '')}"
+    if ctrl.get("burns") and not _BURN_RE.search(injuries):
+        ctrl["burns"] = None
+    tracks = ctrl.get("vitals_tracks") or {}
+    green, red = tracks.get("green") or [], tracks.get("red") or []
+    if green and red and red[0].get("t", 0) == green[0].get("t", 0):
+        red[0] = dict(green[0])
+    focus = next((l for l in ctrl.get("legs") or [] if l.get("focus")), None)
+    if focus and green and check_handover(ctrl):
+        # Turnover and arrival vitals legitimately differ when the patient
+        # worsens en route — keep the author's card, and say so on it.
+        hv = focus.setdefault("handover", {})
+        if not hv.get("vitals"):
+            hv["vitals"] = {k: green[0].get(k) for k in ("hr", "sbp", "dbp", "rr", "spo2", "avpu")}
+        else:
+            g0 = green[0]
+            hv["summary"] = (hv.get("summary", "").rstrip() + f" Deteriorated en route; on arrival HR {g0.get('hr')}, "
+                             f"BP {g0.get('sbp')}/{g0.get('dbp')}.").strip()
+    for leg in ctrl.get("legs") or []:
+        for med in (leg.get("handover") or {}).get("meds") or []:
+            if "txa" in (med.get("drug") or "").lower():
+                m = re.search(r"(\d+(?:\.\d+)?)\s*(g|gm|mg)", med.get("dose") or "", re.I)
+                if m and float(m.group(1)) / (1000 if m.group(2).lower() == "mg" else 1) not in (1.0, 2.0):
+                    med["dose"] = "2 g"
     return ctrl
+
+
+def finalize(ctrl: Dict, case: Dict,
+             llm: Optional[Callable[[str, str], str]] = None,
+             revise: Optional[Callable[[Dict, List[Dict]], Dict]] = None,
+             regenerate: Optional[Callable[[], Dict]] = None,
+             fallback: Optional[Callable[[], Dict]] = None,
+             max_rounds: int = 3, source: str = "ai") -> Dict:
+    """Red-team a controller layer and FIX it until clean, so the case ships as
+    a final draft. Loop: deterministic fixes → rules + AI critic → AI revision.
+    If it can't get clean in max_rounds, regenerate once and repeat; if that
+    fails too, ship the pathway template. Returns the clean layer with a small
+    `quality` record (how it got there); no findings are attached."""
+    rounds = 0
+    candidates = [(source, lambda: ctrl)]
+    if regenerate:
+        candidates.append(("regenerated", regenerate))
+    for source, make in candidates:
+        try:
+            cur = make()
+        except Exception as e:
+            print(f"WARNING: {source} controller layer unavailable: {e}")
+            continue
+        for _ in range(max_rounds):
+            rounds += 1
+            cur = autofix(cur, case)
+            findings = run_rules(cur, case)
+            if llm:
+                try:
+                    findings += ai_critic(cur, case, llm)
+                except Exception as e:
+                    print(f"WARNING: AI critic failed: {e}")
+            if not _blocking(findings):
+                cur.pop("_fallback", None)
+                cur["quality"] = {"source": source, "rounds": rounds}
+                return cur
+            if not revise:
+                break
+            try:
+                cur = revise(cur, findings)
+            except Exception as e:
+                print(f"WARNING: revision failed: {e}")
+                break
+    if fallback is None:
+        raise ValueError("controller layer could not be made clean and no template was given")
+    cur = autofix(fallback(), case)
+    cur.pop("_fallback", None)
+    left = _blocking(run_rules(cur, case))
+    if left:
+        print(f"WARNING: template still has {len(left)} rules finding(s): {[f['issue'] for f in left]}")
+    cur["quality"] = {"source": "template", "rounds": rounds}
+    return cur

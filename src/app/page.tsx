@@ -907,10 +907,6 @@ export default function SetupPage() {
         <a href="/controller" style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)', textDecoration: 'underline' }}>
           Live Controller
         </a>
-        {' · '}
-        <a href="/library" style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)', textDecoration: 'underline' }}>
-          Scenario Library
-        </a>
       </div>
     </div>
   );

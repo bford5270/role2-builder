@@ -93,18 +93,10 @@ The `buildspec.yml` artifact selection (`Dockerfile`, `backend/`,
 >
 > - The container must keep serving on **port 8000 internally** — the R2RA
 >   compose file maps `8080 → 8000`.
-> - The container receives **`CORS_ORIGINS`**, **`GEMINI_API_KEY`** and an
->   optional **`DATABASE_URL`**. They are set on the `r2ra-prod` EB environment,
->   not in this repo. `DATABASE_URL` is interpolated from the EB property
->   **`RB_DATABASE_URL`** (never R2RA's own `DATABASE_URL`) — see
->   [docs/REVIEW_STORAGE.md](docs/REVIEW_STORAGE.md).
-> - The container must **work without `DATABASE_URL`**: generation, packages and
->   the live controller (via `cases.json`) need no storage; only history,
->   expert review and the scenario library do, and they report 503 / "not
->   configured" when it is absent.
-> - The engine uses **`NullPool`** so no connection stays open between requests —
->   pooled connections would stop the shared Aurora Serverless v2 cluster from
->   auto-pausing. Don't switch to a pooled engine.
+> - The container receives only **`CORS_ORIGINS`** and **`GEMINI_API_KEY`** as
+>   environment variables. They are set on the `r2ra-prod` EB environment, not
+>   in this repo.
+> - The container must **not assume a `DATABASE_URL`**.
 > - Keep `Dockerfile`, `requirements.txt`, and the buildspec's artifact
 >   selection (`Dockerfile`, `backend/`, `requirements.txt`) intact — the R2RA
 >   deploy consumes exactly that bundle shape.

@@ -15,9 +15,7 @@ R2RA assessments.
 **This repo has no server of its own.** The backend runs as a Docker
 Compose co-tenant on R2RA's Elastic Beanstalk instance. Full
 architecture, the runtime contract (port 8000; env vars `CORS_ORIGINS`
-+ `GEMINI_API_KEY`, plus optional `DATABASE_URL` from the EB property
-`RB_DATABASE_URL` for review storage — see docs/REVIEW_STORAGE.md; must
-run without it, and must keep `NullPool`), and the rollback path are in
++ `GEMINI_API_KEY` only; no DATABASE_URL), and the rollback path are in
 **README.md § Deployment Architecture** — treat that section as
 authoritative and keep it current.
 
