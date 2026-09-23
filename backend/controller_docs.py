@@ -351,8 +351,14 @@ def create_controller_packet(cases: List[Dict], schedule: List[Dict], config, fr
             p.add_run(ctrl["controller_note"]).italic = True
 
         doc.add_heading("Expert review / sign-off", level=2)
-        _kv_table(doc, [("Reviewer (name / specialty)", ""), ("Decision", "☐ Approved   ☐ Changes required"),
-                        ("Date", ""), ("Comments", "\n\n")])
+        rv = ctrl.get("review") or {}
+        if rv.get("status") in ("approved", "changes_requested"):
+            _kv_table(doc, [("Reviewer", rv.get("reviewer") or ""),
+                            ("Decision", "Approved" if rv["status"] == "approved" else "Changes required"),
+                            ("Date", (rv.get("decided_at") or "")[:10]), ("Comments", rv.get("note") or "")])
+        else:
+            _kv_table(doc, [("Reviewer (name / specialty)", ""), ("Decision", "☐ Approved   ☐ Changes required"),
+                            ("Date", ""), ("Comments", "\n\n")])
         doc.add_page_break()
 
     buf = BytesIO()

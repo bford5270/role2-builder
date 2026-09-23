@@ -1,127 +1,817 @@
 {
-  "_source": "Transcribed from the ERSS 'Ship Sim DCS Patient' handouts (turnover card, body map, POI/CCP-to-ERC tree, ERSS Patient Progression tree, vitals/controller sheet). Kept as written, including its inconsistencies, so the red-team checker can be tested against a real expert-built case.",
-  "case": {
-    "meta": {"title": "Penetrating Injury to Chest, Bilat LE Amp"},
-    "zmist": {"zap": "GH5001", "mechanism": "Mortar Strike",
-              "injuries": "BLE amp, penetrating injury to anterior chest",
-              "signs": "Weak pulse, massive hemorrhage",
-              "treatment": "TQ BLE, Occlusive Dressings, Bilateral ND"},
-    "triage_category": "T1",
-    "disposition": "Evac to Role 3",
-    "phases": {"dcr": {}, "dcs": {"title": "Damage Control Surgery"}, "pcc": {}}
+ "_source": "Transcribed from the ERSS 'Ship Sim DCS Patient' handouts (turnover card, body map, POI/CCP-to-ERC tree, ERSS Patient Progression tree, vitals/controller sheet). Kept as written, including its inconsistencies, so the red-team checker can be tested against a real expert-built case.",
+ "case": {
+  "meta": {
+   "title": "Penetrating Injury to Chest, Bilat LE Amp"
   },
-  "controller": {
-    "pathway": "DCR_DCS",
-    "chain": {"nodes": [
-      {"id": "POI", "name": "POI/CCP", "capability": ["TCCC"], "role2": false},
-      {"id": "ERC1", "name": "ERC", "capability": ["TCCC", "DCR-limited"], "role2": false},
-      {"id": "R2", "name": "ERSS (afloat)", "capability": ["DCR", "DCS"], "role2": true},
-      {"id": "ERC2", "name": "ERC (onward)", "capability": ["TCCC", "DCR-limited"], "role2": false}
-    ]},
-    "wounds": [
-      {"id": "w1", "region": "chest", "side": "R", "surface": "anterior", "type": "Penetrating", "intervention": "Occlusive dressing", "effective": true},
-      {"id": "w2", "region": "chest", "side": "L", "surface": "anterior", "type": "Penetrating — hemothorax/pneumothorax", "intervention": "Occlusive dressing", "effective": true},
-      {"id": "w3", "region": "scapula", "side": "R", "surface": "posterior", "type": "Penetrating", "intervention": "None, just blood on clothing", "effective": null},
-      {"id": "w4", "region": "thigh", "side": "bilateral", "surface": "anterior", "type": "Traumatic amputation", "intervention": "Bilateral TQs", "effective": false}
-    ],
-    "moulage": "Pt is airway intact, bilat BS with equal rise and fall, radial pulse palpable (rapid and weak), confused, GCS 10 (E = verbal 3, V= inappropriate words 3, M= withdraws 4), pelvic bruising, GSW to LUE, pelvis is stable when checked. Non-firebreak POI care: chest seal, loose TQs bilat LE.",
-    "critical_decisions": [
-      "Recognition of shock",
-      "Recognition of hemo/pneumothorax, ND will improve BS/ still diminish at base, pt requires emergent chest tube (1500ml initial O/P with 200ml/hr until Damage Control Surgery (DCS))",
-      "Positive E-FAST (no lung slide on R effected side, +fluid if visualized)",
-      "Treat shock with blood products (balanced resus)",
-      "DCS, initiate evac to higher"
-    ],
-    "legs": [
-      {"leg_id": "POI-ERC1", "title": "POI/CCP to ERC", "focus": false, "capability": ["TCCC"],
-       "handover": {},
-       "tree": {"nodes": [
-         {"id": "n1", "type": "assessment", "label": "Primary Survey"},
-         {"id": "n2", "type": "assessment", "label": "Massive Hemorrhage, Blood Sweep Performed"},
-         {"id": "n2b", "type": "finding", "label": "Bleeding from BLE amputations will continue until addressed", "failure": true},
-         {"id": "n3", "type": "intervention", "label": "Loose TQs x2"},
-         {"id": "n4", "type": "assessment", "label": "Airway Intact"},
-         {"id": "n5", "type": "finding", "label": "Breathing Diminished Bilat"},
-         {"id": "n6", "type": "finding", "label": "Circulation: Rapid weak radial pulse, CR>3sec"},
-         {"id": "n7", "type": "finding", "label": "Log Roll, wound at L Scapula Un-treated at POI"},
-         {"id": "a1", "type": "intervention", "label": "Bilat ND: notable release of air, R>L improvement in BS OR Bilat Finger T/Chest Tube: notable release of air; L 1500ml EBL, R Scant O/p"},
-         {"id": "a2", "type": "finding", "label": "L Chest Tube o/p>250ml/hr w/o DCS, R Chest Tube scant O/p"},
-         {"id": "b1", "type": "finding", "label": "PP Vent w/o decompression = increased tension physiology", "failure": true},
-         {"id": "b2", "type": "finding", "label": "Trend to PEA arrest", "failure": true},
-         {"id": "c1", "type": "intervention", "label": "DCR: IV access, rapid infusion with warmed blood, early comms with ERSS, Ca per CPG, TXA if appropriate"},
-         {"id": "c2", "type": "finding", "label": "Transient Response w/o DCS"},
-         {"id": "o1", "type": "outcome", "label": "Handover to ERC for DCS at ERSS"}
-       ], "edges": [
-         {"from": "n1", "to": "n2"}, {"from": "n2", "to": "n2b"}, {"from": "n2b", "to": "n3"}, {"from": "n2", "to": "n3"},
-         {"from": "n3", "to": "n4"}, {"from": "n4", "to": "n5"}, {"from": "n5", "to": "a1", "condition": "A"},
-         {"from": "n5", "to": "b1", "condition": "B"}, {"from": "n5", "to": "n6"}, {"from": "n6", "to": "c1", "condition": "C"},
-         {"from": "n6", "to": "n7"}, {"from": "a1", "to": "a2"}, {"from": "a2", "to": "o1"}, {"from": "b1", "to": "b2"},
-         {"from": "b2", "to": "a1", "condition": "A"}, {"from": "c1", "to": "c2"}, {"from": "c2", "to": "o1"}, {"from": "n7", "to": "o1"}
-       ]},
-       "considerations": ["C-Spine", "Pelvic Stability", "Lethal Diamond", "TXA, Abx, Pain, Sedation, Paralytic", "Temp", "Airway emergencies", "Elevation changes", "Platform stability", "Access", "Comms w/ Air Crew/Pilots/Higher"]},
-      {"leg_id": "R2-ERC2", "title": "ERSS Patient Progression", "focus": true, "capability": ["DCR", "DCS"],
-       "handover": {"summary": "Patient responsive to voice. Time on TQs 25 min prior to current time. 18G L AC.",
-                    "vitals": {"hr": 120, "sbp": 95, "dbp": 68, "rr": 25, "avpu": "V"},
-                    "meds": [{"drug": "TXA", "dose": "2 g", "route": "IV", "minutes_prior": 15},
-                             {"drug": "Ertapenem", "dose": "1 g", "route": "IV", "minutes_prior": 10},
-                             {"drug": "Ketamine", "dose": "20 mg", "route": "IVP", "minutes_prior": 5}],
-                    "interventions": ["TQ BLE", "Occlusive dressings", "Bilateral ND"]},
-       "tree": {"nodes": [
-         {"id": "n1", "type": "assessment", "label": "Pt arrival, Primary Survey"},
-         {"id": "n2", "type": "assessment", "label": "Massive Hemorrhage, Blood Sweep Performed"},
-         {"id": "n2b", "type": "finding", "label": "Bleeding from BLE amputations will continue until addressed", "failure": true},
-         {"id": "n3", "type": "intervention", "label": "Loose TQs x2"},
-         {"id": "n4", "type": "assessment", "label": "Airway Intact"},
-         {"id": "n5", "type": "finding", "label": "Breathing Diminished Bilat"},
-         {"id": "n6", "type": "finding", "label": "Circulation: Rapid weak radial pulse, CR>3sec"},
-         {"id": "n7", "type": "finding", "label": "Log Roll, wound at L Scapula Un-treated at POI"},
-         {"id": "a0", "type": "finding", "label": "+E-FAST Bilateral"},
-         {"id": "a1", "type": "intervention", "label": "Bilat ND: notable release of air, R>L improvement in BS OR Bilat Finger T/Chest Tube: notable release of air; L 1500ml EBL"},
-         {"id": "a2", "type": "finding", "label": "Chest Tube o/p>250ml/hr w/o DCS"},
-         {"id": "b1", "type": "finding", "label": "PP Vent w/o decompression = increased tension physiology", "failure": true},
-         {"id": "b2", "type": "finding", "label": "Trend to PEA arrest", "failure": true},
-         {"id": "b3", "type": "intervention", "label": "OR"},
-         {"id": "c1", "type": "intervention", "label": "DCR: rapid infusion with warmed blood, early consideration of WBB/resupply, Ca per CPG, TXA if appropriate"},
-         {"id": "c2", "type": "finding", "label": "Transient Response w/o DCS"},
-         {"id": "o1", "type": "outcome", "label": "DCS", "detail": "L Thoracotomy"}
-       ], "edges": [
-         {"from": "n1", "to": "n2"}, {"from": "n2", "to": "n2b"}, {"from": "n2b", "to": "n3"}, {"from": "n2", "to": "n3"},
-         {"from": "n3", "to": "n4"}, {"from": "n4", "to": "n5"}, {"from": "n5", "to": "a0", "condition": "A"},
-         {"from": "n5", "to": "a1", "condition": "A"}, {"from": "a0", "to": "a1"}, {"from": "n5", "to": "b1", "condition": "B"},
-         {"from": "n5", "to": "n6"}, {"from": "n6", "to": "c1", "condition": "C"}, {"from": "n6", "to": "n7"},
-         {"from": "a1", "to": "a2"}, {"from": "a2", "to": "o1"}, {"from": "b1", "to": "b2"}, {"from": "b2", "to": "b3", "condition": "A"},
-         {"from": "b3", "to": "o1"}, {"from": "c1", "to": "c2"}, {"from": "c2", "to": "o1"}, {"from": "n7", "to": "o1"}
-       ]},
-       "considerations": ["C-Spine", "Pelvic Stability", "Lethal Diamond", "TXA, Abx, Pain, Sedation", "Temp"]}
-    ],
-    "critical_actions": [
-      {"id": "ca1", "leg_id": "R2-ERC2", "action": "Chest tube for hemothorax with continued DCR", "window_min": 5,
-       "if_missed": "Move to the red track", "rejoin": "Once they perform the correct intervention move to the green V/S and continue"}
-    ],
-    "vitals_tracks": {
-      "green": [
-        {"t": 0, "hr": 134, "sbp": 86, "dbp": 56, "rr": 28, "spo2": 88, "temp_f": 96, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 5, "hr": 135, "sbp": 80, "dbp": 62, "rr": 33, "spo2": 84, "temp_f": 96, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 15, "hr": 119, "sbp": 94, "dbp": 65, "rr": 20, "spo2": 94, "temp_f": 97.8, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 20, "hr": 122, "sbp": 89, "dbp": 56, "rr": 17, "spo2": 95, "temp_f": 97.8, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 25, "hr": 114, "sbp": 96, "dbp": 68, "rr": 20, "spo2": 97, "temp_f": 97.7, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 30, "hr": 119, "sbp": 94, "dbp": 65, "rr": 20, "spo2": 94, "temp_f": 97.8, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 35, "hr": 121, "sbp": 92, "dbp": 59, "rr": 19, "spo2": 95, "temp_f": 97.8, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 40, "hr": 122, "sbp": 89, "dbp": 58, "rr": 20, "spo2": 97, "temp_f": 97.7, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 45, "hr": 119, "sbp": 94, "dbp": 56, "rr": 20, "spo2": 94, "temp_f": 97.8, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 50, "hr": 115, "sbp": 100, "dbp": 65, "rr": 18, "spo2": 94, "temp_f": 97.8, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 55, "hr": 116, "sbp": 98, "dbp": 70, "rr": 17, "spo2": 95, "temp_f": 97.8, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 60, "hr": 112, "sbp": 96, "dbp": 68, "rr": 20, "spo2": 97, "temp_f": 97.7, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"}
-      ],
-      "red": [
-        {"t": 5, "hr": 135, "sbp": 80, "dbp": 62, "rr": 33, "spo2": 84, "temp_f": 96, "avpu": "V", "gcs_e": 3, "gcs_v": 4, "gcs_m": 5, "pupils": "Normal"},
-        {"t": 10, "hr": 130, "sbp": 74, "dbp": 56, "rr": 35, "spo2": 80, "temp_f": 96, "avpu": "P", "gcs_e": 2, "gcs_v": 2, "gcs_m": 4, "pupils": "Sluggish"},
-        {"t": 15, "hr": 125, "sbp": 70, "dbp": 52, "rr": 34, "spo2": 75, "temp_f": 96, "avpu": "P", "gcs_e": 2, "gcs_v": 2, "gcs_m": 4, "pupils": "Sluggish"},
-        {"t": 20, "hr": 122, "sbp": 60, "dbp": 46, "rr": 28, "spo2": 74, "temp_f": 96, "avpu": "U", "gcs_e": 1, "gcs_v": 1, "gcs_m": 1, "pupils": "Sluggish"},
-        {"t": 25, "hr": 80, "sbp": 50, "dbp": 41, "rr": 8, "spo2": 70, "temp_f": 97.7, "avpu": "U", "gcs_e": 1, "gcs_v": 1, "gcs_m": 1, "pupils": "None"}
-      ]
-    },
-    "controller_note": "If they treat hemothorax with chest tube and continual DCR continue to the Green, if they do not move to the Red. Transient response until DCS. Once they perform the correct intervention move to the Green V/S and continue.",
-    "burns": {"tbsa": [24, 8, 16]}
+  "zmist": {
+   "zap": "GH5001",
+   "mechanism": "Mortar Strike",
+   "injuries": "BLE amp, penetrating injury to anterior chest",
+   "signs": "Weak pulse, massive hemorrhage",
+   "treatment": "TQ BLE, Occlusive Dressings, Bilateral ND"
+  },
+  "triage_category": "T1",
+  "disposition": "Evac to Role 3",
+  "phases": {
+   "dcr": {},
+   "dcs": {
+    "title": "Damage Control Surgery"
+   },
+   "pcc": {}
   }
+ },
+ "controller": {
+  "pathway": "DCR_DCS",
+  "chain": {
+   "nodes": [
+    {
+     "id": "POI",
+     "name": "POI/CCP",
+     "capability": [
+      "TCCC"
+     ],
+     "role2": false
+    },
+    {
+     "id": "ERC1",
+     "name": "ERC",
+     "capability": [
+      "TCCC",
+      "DCR-limited"
+     ],
+     "role2": false
+    },
+    {
+     "id": "R2",
+     "name": "ERSS (afloat)",
+     "capability": [
+      "DCR",
+      "DCS"
+     ],
+     "role2": true
+    },
+    {
+     "id": "ERC2",
+     "name": "ERC (onward)",
+     "capability": [
+      "TCCC",
+      "DCR-limited"
+     ],
+     "role2": false
+    }
+   ],
+   "legs": [
+    {
+     "id": "POI-ERC1",
+     "from": "POI/CCP",
+     "to": "ERC",
+     "title": "POI/CCP to ERC",
+     "capability": [
+      "TCCC"
+     ],
+     "focus": false
+    },
+    {
+     "id": "R2-ERC2",
+     "from": "ERSS (afloat)",
+     "to": "ERC (onward)",
+     "title": "ERSS Patient Progression",
+     "capability": [
+      "DCR",
+      "DCS"
+     ],
+     "focus": true
+    }
+   ],
+   "fragos": [],
+   "notes": []
+  },
+  "wounds": [
+   {
+    "id": "w1",
+    "region": "chest",
+    "side": "R",
+    "surface": "anterior",
+    "type": "Penetrating",
+    "intervention": "Occlusive dressing",
+    "effective": true
+   },
+   {
+    "id": "w2",
+    "region": "chest",
+    "side": "L",
+    "surface": "anterior",
+    "type": "Penetrating \u2014 hemothorax/pneumothorax",
+    "intervention": "Occlusive dressing",
+    "effective": true
+   },
+   {
+    "id": "w3",
+    "region": "scapula",
+    "side": "R",
+    "surface": "posterior",
+    "type": "Penetrating",
+    "intervention": "None, just blood on clothing",
+    "effective": null
+   },
+   {
+    "id": "w4",
+    "region": "thigh",
+    "side": "bilateral",
+    "surface": "anterior",
+    "type": "Traumatic amputation",
+    "intervention": "Bilateral TQs",
+    "effective": false
+   }
+  ],
+  "moulage": "Pt is airway intact, bilat BS with equal rise and fall, radial pulse palpable (rapid and weak), confused, GCS 10 (E = verbal 3, V= inappropriate words 3, M= withdraws 4), pelvic bruising, GSW to LUE, pelvis is stable when checked. Non-firebreak POI care: chest seal, loose TQs bilat LE.",
+  "critical_decisions": [
+   "Recognition of shock",
+   "Recognition of hemo/pneumothorax, ND will improve BS/ still diminish at base, pt requires emergent chest tube (1500ml initial O/P with 200ml/hr until Damage Control Surgery (DCS))",
+   "Positive E-FAST (no lung slide on R effected side, +fluid if visualized)",
+   "Treat shock with blood products (balanced resus)",
+   "DCS, initiate evac to higher"
+  ],
+  "legs": [
+   {
+    "leg_id": "POI-ERC1",
+    "title": "POI/CCP to ERC",
+    "focus": false,
+    "capability": [
+     "TCCC"
+    ],
+    "handover": {},
+    "tree": {
+     "nodes": [
+      {
+       "id": "n1",
+       "type": "assessment",
+       "label": "Primary Survey"
+      },
+      {
+       "id": "n2",
+       "type": "assessment",
+       "label": "Massive Hemorrhage, Blood Sweep Performed"
+      },
+      {
+       "id": "n2b",
+       "type": "finding",
+       "label": "Bleeding from BLE amputations will continue until addressed",
+       "failure": true
+      },
+      {
+       "id": "n3",
+       "type": "intervention",
+       "label": "Loose TQs x2"
+      },
+      {
+       "id": "n4",
+       "type": "assessment",
+       "label": "Airway Intact"
+      },
+      {
+       "id": "n5",
+       "type": "finding",
+       "label": "Breathing Diminished Bilat"
+      },
+      {
+       "id": "n6",
+       "type": "finding",
+       "label": "Circulation: Rapid weak radial pulse, CR>3sec"
+      },
+      {
+       "id": "n7",
+       "type": "finding",
+       "label": "Log Roll, wound at L Scapula Un-treated at POI"
+      },
+      {
+       "id": "a1",
+       "type": "intervention",
+       "label": "Bilat ND: notable release of air, R>L improvement in BS OR Bilat Finger T/Chest Tube: notable release of air; L 1500ml EBL, R Scant O/p"
+      },
+      {
+       "id": "a2",
+       "type": "finding",
+       "label": "L Chest Tube o/p>250ml/hr w/o DCS, R Chest Tube scant O/p"
+      },
+      {
+       "id": "b1",
+       "type": "finding",
+       "label": "PP Vent w/o decompression = increased tension physiology",
+       "failure": true
+      },
+      {
+       "id": "b2",
+       "type": "finding",
+       "label": "Trend to PEA arrest",
+       "failure": true
+      },
+      {
+       "id": "c1",
+       "type": "intervention",
+       "label": "DCR: IV access, rapid infusion with warmed blood, early comms with ERSS, Ca per CPG, TXA if appropriate"
+      },
+      {
+       "id": "c2",
+       "type": "finding",
+       "label": "Transient Response w/o DCS"
+      },
+      {
+       "id": "o1",
+       "type": "outcome",
+       "label": "Handover to ERC for DCS at ERSS"
+      }
+     ],
+     "edges": [
+      {
+       "from": "n1",
+       "to": "n2"
+      },
+      {
+       "from": "n2",
+       "to": "n2b"
+      },
+      {
+       "from": "n2b",
+       "to": "n3"
+      },
+      {
+       "from": "n2",
+       "to": "n3"
+      },
+      {
+       "from": "n3",
+       "to": "n4"
+      },
+      {
+       "from": "n4",
+       "to": "n5"
+      },
+      {
+       "from": "n5",
+       "to": "a1",
+       "condition": "A"
+      },
+      {
+       "from": "n5",
+       "to": "b1",
+       "condition": "B"
+      },
+      {
+       "from": "n5",
+       "to": "n6"
+      },
+      {
+       "from": "n6",
+       "to": "c1",
+       "condition": "C"
+      },
+      {
+       "from": "n6",
+       "to": "n7"
+      },
+      {
+       "from": "a1",
+       "to": "a2"
+      },
+      {
+       "from": "a2",
+       "to": "o1"
+      },
+      {
+       "from": "b1",
+       "to": "b2"
+      },
+      {
+       "from": "b2",
+       "to": "a1",
+       "condition": "A"
+      },
+      {
+       "from": "c1",
+       "to": "c2"
+      },
+      {
+       "from": "c2",
+       "to": "o1"
+      },
+      {
+       "from": "n7",
+       "to": "o1"
+      }
+     ]
+    },
+    "considerations": [
+     "C-Spine",
+     "Pelvic Stability",
+     "Lethal Diamond",
+     "TXA, Abx, Pain, Sedation, Paralytic",
+     "Temp",
+     "Airway emergencies",
+     "Elevation changes",
+     "Platform stability",
+     "Access",
+     "Comms w/ Air Crew/Pilots/Higher"
+    ]
+   },
+   {
+    "leg_id": "R2-ERC2",
+    "title": "ERSS Patient Progression",
+    "focus": true,
+    "capability": [
+     "DCR",
+     "DCS"
+    ],
+    "handover": {
+     "summary": "Patient responsive to voice. Time on TQs 25 min prior to current time. 18G L AC.",
+     "vitals": {
+      "hr": 120,
+      "sbp": 95,
+      "dbp": 68,
+      "rr": 25,
+      "avpu": "V"
+     },
+     "meds": [
+      {
+       "drug": "TXA",
+       "dose": "2 g",
+       "route": "IV",
+       "minutes_prior": 15
+      },
+      {
+       "drug": "Ertapenem",
+       "dose": "1 g",
+       "route": "IV",
+       "minutes_prior": 10
+      },
+      {
+       "drug": "Ketamine",
+       "dose": "20 mg",
+       "route": "IVP",
+       "minutes_prior": 5
+      }
+     ],
+     "interventions": [
+      "TQ BLE",
+      "Occlusive dressings",
+      "Bilateral ND"
+     ]
+    },
+    "tree": {
+     "nodes": [
+      {
+       "id": "n1",
+       "type": "assessment",
+       "label": "Pt arrival, Primary Survey"
+      },
+      {
+       "id": "n2",
+       "type": "assessment",
+       "label": "Massive Hemorrhage, Blood Sweep Performed"
+      },
+      {
+       "id": "n2b",
+       "type": "finding",
+       "label": "Bleeding from BLE amputations will continue until addressed",
+       "failure": true
+      },
+      {
+       "id": "n3",
+       "type": "intervention",
+       "label": "Loose TQs x2"
+      },
+      {
+       "id": "n4",
+       "type": "assessment",
+       "label": "Airway Intact"
+      },
+      {
+       "id": "n5",
+       "type": "finding",
+       "label": "Breathing Diminished Bilat"
+      },
+      {
+       "id": "n6",
+       "type": "finding",
+       "label": "Circulation: Rapid weak radial pulse, CR>3sec"
+      },
+      {
+       "id": "n7",
+       "type": "finding",
+       "label": "Log Roll, wound at L Scapula Un-treated at POI"
+      },
+      {
+       "id": "a0",
+       "type": "finding",
+       "label": "+E-FAST Bilateral"
+      },
+      {
+       "id": "a1",
+       "type": "intervention",
+       "label": "Bilat ND: notable release of air, R>L improvement in BS OR Bilat Finger T/Chest Tube: notable release of air; L 1500ml EBL"
+      },
+      {
+       "id": "a2",
+       "type": "finding",
+       "label": "Chest Tube o/p>250ml/hr w/o DCS"
+      },
+      {
+       "id": "b1",
+       "type": "finding",
+       "label": "PP Vent w/o decompression = increased tension physiology",
+       "failure": true
+      },
+      {
+       "id": "b2",
+       "type": "finding",
+       "label": "Trend to PEA arrest",
+       "failure": true
+      },
+      {
+       "id": "b3",
+       "type": "intervention",
+       "label": "OR"
+      },
+      {
+       "id": "c1",
+       "type": "intervention",
+       "label": "DCR: rapid infusion with warmed blood, early consideration of WBB/resupply, Ca per CPG, TXA if appropriate"
+      },
+      {
+       "id": "c2",
+       "type": "finding",
+       "label": "Transient Response w/o DCS"
+      },
+      {
+       "id": "o1",
+       "type": "outcome",
+       "label": "DCS",
+       "detail": "L Thoracotomy"
+      }
+     ],
+     "edges": [
+      {
+       "from": "n1",
+       "to": "n2"
+      },
+      {
+       "from": "n2",
+       "to": "n2b"
+      },
+      {
+       "from": "n2b",
+       "to": "n3"
+      },
+      {
+       "from": "n2",
+       "to": "n3"
+      },
+      {
+       "from": "n3",
+       "to": "n4"
+      },
+      {
+       "from": "n4",
+       "to": "n5"
+      },
+      {
+       "from": "n5",
+       "to": "a0",
+       "condition": "A"
+      },
+      {
+       "from": "n5",
+       "to": "a1",
+       "condition": "A"
+      },
+      {
+       "from": "a0",
+       "to": "a1"
+      },
+      {
+       "from": "n5",
+       "to": "b1",
+       "condition": "B"
+      },
+      {
+       "from": "n5",
+       "to": "n6"
+      },
+      {
+       "from": "n6",
+       "to": "c1",
+       "condition": "C"
+      },
+      {
+       "from": "n6",
+       "to": "n7"
+      },
+      {
+       "from": "a1",
+       "to": "a2"
+      },
+      {
+       "from": "a2",
+       "to": "o1"
+      },
+      {
+       "from": "b1",
+       "to": "b2"
+      },
+      {
+       "from": "b2",
+       "to": "b3",
+       "condition": "A"
+      },
+      {
+       "from": "b3",
+       "to": "o1"
+      },
+      {
+       "from": "c1",
+       "to": "c2"
+      },
+      {
+       "from": "c2",
+       "to": "o1"
+      },
+      {
+       "from": "n7",
+       "to": "o1"
+      }
+     ]
+    },
+    "considerations": [
+     "C-Spine",
+     "Pelvic Stability",
+     "Lethal Diamond",
+     "TXA, Abx, Pain, Sedation",
+     "Temp"
+    ]
+   }
+  ],
+  "critical_actions": [
+   {
+    "id": "ca1",
+    "leg_id": "R2-ERC2",
+    "action": "Chest tube for hemothorax with continued DCR",
+    "window_min": 5,
+    "if_missed": "Move to the red track",
+    "rejoin": "Once they perform the correct intervention move to the green V/S and continue"
+   }
+  ],
+  "vitals_tracks": {
+   "green": [
+    {
+     "t": 0,
+     "hr": 134,
+     "sbp": 86,
+     "dbp": 56,
+     "rr": 28,
+     "spo2": 88,
+     "temp_f": 96,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 5,
+     "hr": 135,
+     "sbp": 80,
+     "dbp": 62,
+     "rr": 33,
+     "spo2": 84,
+     "temp_f": 96,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 15,
+     "hr": 119,
+     "sbp": 94,
+     "dbp": 65,
+     "rr": 20,
+     "spo2": 94,
+     "temp_f": 97.8,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 20,
+     "hr": 122,
+     "sbp": 89,
+     "dbp": 56,
+     "rr": 17,
+     "spo2": 95,
+     "temp_f": 97.8,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 25,
+     "hr": 114,
+     "sbp": 96,
+     "dbp": 68,
+     "rr": 20,
+     "spo2": 97,
+     "temp_f": 97.7,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 30,
+     "hr": 119,
+     "sbp": 94,
+     "dbp": 65,
+     "rr": 20,
+     "spo2": 94,
+     "temp_f": 97.8,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 35,
+     "hr": 121,
+     "sbp": 92,
+     "dbp": 59,
+     "rr": 19,
+     "spo2": 95,
+     "temp_f": 97.8,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 40,
+     "hr": 122,
+     "sbp": 89,
+     "dbp": 58,
+     "rr": 20,
+     "spo2": 97,
+     "temp_f": 97.7,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 45,
+     "hr": 119,
+     "sbp": 94,
+     "dbp": 56,
+     "rr": 20,
+     "spo2": 94,
+     "temp_f": 97.8,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 50,
+     "hr": 115,
+     "sbp": 100,
+     "dbp": 65,
+     "rr": 18,
+     "spo2": 94,
+     "temp_f": 97.8,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 55,
+     "hr": 116,
+     "sbp": 98,
+     "dbp": 70,
+     "rr": 17,
+     "spo2": 95,
+     "temp_f": 97.8,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 60,
+     "hr": 112,
+     "sbp": 96,
+     "dbp": 68,
+     "rr": 20,
+     "spo2": 97,
+     "temp_f": 97.7,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    }
+   ],
+   "red": [
+    {
+     "t": 5,
+     "hr": 135,
+     "sbp": 80,
+     "dbp": 62,
+     "rr": 33,
+     "spo2": 84,
+     "temp_f": 96,
+     "avpu": "V",
+     "gcs_e": 3,
+     "gcs_v": 4,
+     "gcs_m": 5,
+     "pupils": "Normal"
+    },
+    {
+     "t": 10,
+     "hr": 130,
+     "sbp": 74,
+     "dbp": 56,
+     "rr": 35,
+     "spo2": 80,
+     "temp_f": 96,
+     "avpu": "P",
+     "gcs_e": 2,
+     "gcs_v": 2,
+     "gcs_m": 4,
+     "pupils": "Sluggish"
+    },
+    {
+     "t": 15,
+     "hr": 125,
+     "sbp": 70,
+     "dbp": 52,
+     "rr": 34,
+     "spo2": 75,
+     "temp_f": 96,
+     "avpu": "P",
+     "gcs_e": 2,
+     "gcs_v": 2,
+     "gcs_m": 4,
+     "pupils": "Sluggish"
+    },
+    {
+     "t": 20,
+     "hr": 122,
+     "sbp": 60,
+     "dbp": 46,
+     "rr": 28,
+     "spo2": 74,
+     "temp_f": 96,
+     "avpu": "U",
+     "gcs_e": 1,
+     "gcs_v": 1,
+     "gcs_m": 1,
+     "pupils": "Sluggish"
+    },
+    {
+     "t": 25,
+     "hr": 80,
+     "sbp": 50,
+     "dbp": 41,
+     "rr": 8,
+     "spo2": 70,
+     "temp_f": 97.7,
+     "avpu": "U",
+     "gcs_e": 1,
+     "gcs_v": 1,
+     "gcs_m": 1,
+     "pupils": "None"
+    }
+   ]
+  },
+  "controller_note": "If they treat hemothorax with chest tube and continual DCR continue to the Green, if they do not move to the Red. Transient response until DCS. Once they perform the correct intervention move to the Green V/S and continue.",
+  "burns": {
+   "tbsa": [
+    24,
+    8,
+    16
+   ]
+  }
+ }
 }

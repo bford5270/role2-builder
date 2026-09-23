@@ -74,7 +74,11 @@ export default function HistoricExercisesPage() {
         annex_q: 'docx',
         medroe: 'docx',
         case_book: 'docx',
-        road_to_war: 'docx'
+        road_to_war: 'docx',
+        fragos: 'docx',
+        controller_packet: 'docx',
+        controller_vitals: 'xlsx',
+        cases_json: 'json'
       };
       const labels: Record<string, string> = {
         msel: 'MSEL',
@@ -82,7 +86,11 @@ export default function HistoricExercisesPage() {
         annex_q: 'Annex_Q',
         medroe: 'MEDROE',
         case_book: 'Case_Book',
-        road_to_war: 'Road_to_War_Prompt'
+        road_to_war: 'Road_to_War_Prompt',
+        fragos: 'FRAGOs',
+        controller_packet: 'Controller_Packet',
+        controller_vitals: 'Controller_Vitals',
+        cases_json: 'cases'
       };
       
       a.download = `${exerciseName}_${labels[docType]}.${extensions[docType]}`;
@@ -177,6 +185,10 @@ export default function HistoricExercisesPage() {
               </div>
 
               <div className="border-t border-border-1 pt-3">
+                <div className="flex flex-wrap gap-2 mb-3">
+                  <a href={`/review?exercise=${exercise.id}`} className="px-3 py-1 bg-accent hover:bg-accent-hover text-accent-on rounded text-xs font-semibold">Expert review</a>
+                  <a href={`/controller?exercise=${exercise.id}`} className="px-3 py-1 bg-surface-2 hover:bg-surface-3 border border-border-1 text-ink-2 rounded text-xs">Live controller</a>
+                </div>
                 <p className="text-xs font-semibold uppercase tracking-caps text-ink-3 mb-2">Individual documents</p>
                 <div className="flex flex-wrap gap-2">
                   {[
@@ -185,7 +197,11 @@ export default function HistoricExercisesPage() {
                     { key: 'annex_q', label: 'Annex Q' },
                     { key: 'medroe', label: 'MEDROE' },
                     { key: 'case_book', label: 'Case book' },
-                    { key: 'road_to_war', label: 'Road to War' }
+                    { key: 'road_to_war', label: 'Road to War' },
+                    { key: 'fragos', label: 'FRAGOs' },
+                    { key: 'controller_packet', label: 'Controller packet' },
+                    { key: 'controller_vitals', label: 'Controller vitals' },
+                    { key: 'cases_json', label: 'cases.json' }
                   ].map(doc => (
                     <button
                       key={doc.key}
