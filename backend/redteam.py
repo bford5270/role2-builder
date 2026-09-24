@@ -378,7 +378,7 @@ def run_rules(ctrl: Dict, case: Dict) -> List[Dict]:
 
 CRITIC_SYSTEM_PROMPT = """You are a red team of expert military medical simulation personnel — a trauma
 surgeon, an emergency physician, a CRNA, an ERC/flight nurse and a simulation technician — reviewing ONE
-casualty's controller layer before it is used in a Role 2 exercise. Be specific and adversarial.
+casualty's controller layer before it is used in a Role 2 exercise. You review AND repair in a single pass.
 
 Check:
 1. Physiology: do the green/red vitals follow from the injuries and the care given? Is deterioration
@@ -391,31 +391,74 @@ Check:
 5. Consistency: laterality, GCS, thresholds, times, doses, turnover vs arrival.
 6. Moulage: can the sim tech build what is described, and do the findings support the decisions asked?
 
-Return JSON only: {"findings": [{"severity": "high|medium|low", "category": "String",
-"location": "leg id / node id / vitals_tracks.red@15 / wounds / moulage", "issue": "String", "fix": "String"}]}
-Use "high" only for errors that would teach the wrong thing or break play. Return an empty list if sound."""
+Also fix every RULES FINDING you are given (these are deterministic checks and are always real).
+
+Only act on errors that would teach the wrong thing or break play. Do NOT rewrite for style, do NOT add
+optional detail, do NOT report minor issues — the layer ships as-is unless something is wrong.
+
+Return JSON only, in one of two forms:
+- Sound as written (and no rules findings given): {"ok": true}
+- Needs fixes: {"ok": false,
+    "findings": [{"category": "String", "location": "String", "issue": "String"}],
+    "patch": { ONLY the top-level fields you changed, each given in full: any of "wounds", "moulage",
+               "critical_decisions", "critical_actions", "vitals_tracks", "controller_note", "burns";
+               plus "legs": [ONLY the legs you changed, each a full leg object with its exact "leg_id"] } }
+Keep the patch minimal: unchanged fields and unchanged legs must be left out."""
+
+# Fields a patch may replace. Everything else (chain, pathway, focus_leg,
+# quality) is owned by the pipeline, never by the model.
+_PATCHABLE = ("wounds", "moulage", "critical_decisions", "critical_actions", "vitals_tracks",
+              "controller_note", "burns")
 
 
-def ai_critic(ctrl: Dict, case: Dict, llm: Callable[[str, str], str]) -> List[Dict]:
-    body = {k: v for k, v in ctrl.items() if k not in ("chain", "red_team", "review")}
+def _parse(text: str) -> Dict:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        s, e = text.find("{"), text.rfind("}") + 1
+        return json.loads(text[s:e]) if s != -1 and e > s else {}
+
+
+def apply_patch(ctrl: Dict, patch: Dict) -> Dict:
+    """Merge a partial controller layer into ctrl: listed top-level fields are
+    replaced, legs are replaced field-by-field by leg_id. A full layer is a
+    valid patch too."""
+    out = json.loads(json.dumps(ctrl))
+    if not isinstance(patch, dict):
+        return out
+    for k in _PATCHABLE:
+        if k in patch:
+            out[k] = patch[k]
+    by_id = {l.get("leg_id"): l for l in patch.get("legs") or [] if isinstance(l, dict)}
+    for leg in out.get("legs") or []:
+        got = by_id.get(leg.get("leg_id"))
+        if got:
+            for k in ("handover", "tree", "considerations"):
+                if k in got:
+                    leg[k] = got[k]
+    return out
+
+
+def _review_body(ctrl: Dict) -> Dict:
+    return {k: v for k, v in ctrl.items()
+            if k not in ("chain", "pathway", "focus_leg", "quality", "red_team", "review")}
+
+
+def ai_review(ctrl: Dict, case: Dict, rules_findings: List[Dict], llm: Callable[[str, str], str]) -> Dict:
+    """One call: the expert critic reviews the layer and returns a minimal patch
+    for anything wrong (including the rules findings), or {"ok": true}.
+    Returns the patch ({} when sound)."""
     prompt = (f"CASE Z-MIST: {json.dumps(case.get('zmist'))}\nTRIAGE: {case.get('triage_category')} "
               f"DISPOSITION: {case.get('disposition')}\nCARE CHAIN: "
               + " → ".join(n["name"] for n in (ctrl.get("chain") or {}).get("nodes", []))
-              + f"\n\nCONTROLLER LAYER:\n{json.dumps(body, indent=1)}")
-    text = llm(prompt, CRITIC_SYSTEM_PROMPT)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        s, e = text.find("{"), text.rfind("}") + 1
-        data = json.loads(text[s:e]) if s != -1 else {}
-    out = []
-    for f in (data.get("findings") or []):
-        if isinstance(f, dict) and f.get("issue"):
-            sev = str(f.get("severity", "medium")).lower()
-            out.append({"severity": sev if sev in ("high", "medium", "low") else "medium",
-                        "category": f.get("category", "clinical"), "location": f.get("location", ""),
-                        "issue": f["issue"], "fix": f.get("fix", ""), "source": "ai"})
-    return out
+              + "\n\nRULES FINDINGS TO FIX:\n"
+              + (json.dumps([{k: f.get(k) for k in ("category", "location", "issue", "fix")}
+                             for f in rules_findings], indent=1) if rules_findings else "none")
+              + f"\n\nCONTROLLER LAYER:\n{json.dumps(_review_body(ctrl), separators=(',', ':'))}")
+    data = _parse(llm(prompt, CRITIC_SYSTEM_PROMPT))
+    if data.get("ok") is True and not data.get("patch"):
+        return {}
+    return data.get("patch") or {}
 
 
 def summarize(findings: List[Dict]) -> Dict:
@@ -424,9 +467,8 @@ def summarize(findings: List[Dict]) -> Dict:
 
 def _blocking(findings: List[Dict]) -> List[Dict]:
     """What must be fixed before a case ships: every rules finding rated high or
-    medium, and AI-critic findings rated high. (AI medium/low findings are sent
-    to the reviser but never hold a case back — the critic can always find
-    something to say.)"""
+    medium, and any AI finding rated high. (The AI review repairs what it finds
+    in the same call, so its findings normally never reach this gate.)"""
     return [f for f in findings
             if (f["source"] == "rules" and f["severity"] in ("high", "medium"))
             or (f["source"] == "ai" and f["severity"] == "high")]
@@ -463,46 +505,41 @@ def autofix(ctrl: Dict, case: Dict) -> Dict:
 
 
 def finalize(ctrl: Dict, case: Dict,
-             llm: Optional[Callable[[str, str], str]] = None,
+             review: Optional[Callable[[Dict, List[Dict]], Dict]] = None,
              revise: Optional[Callable[[Dict, List[Dict]], Dict]] = None,
-             regenerate: Optional[Callable[[], Dict]] = None,
              fallback: Optional[Callable[[], Dict]] = None,
-             max_rounds: int = 3, source: str = "ai") -> Dict:
-    """Red-team a controller layer and FIX it until clean, so the case ships as
-    a final draft. Loop: deterministic fixes → rules + AI critic → AI revision.
-    If it can't get clean in max_rounds, regenerate once and repeat; if that
-    fails too, ship the pathway template. Returns the clean layer with a small
-    `quality` record (how it got there); no findings are attached."""
+             source: str = "ai") -> Dict:
+    """Red-team a controller layer and FIX it so the case ships as a final
+    draft, spending at most two model calls:
+
+      1. deterministic autofix + rules (free)
+      2. one expert review-and-repair call that also fixes the rules findings
+         (returns a minimal patch, or nothing when the layer is sound)
+      3. only if rules findings survive: one targeted revision (patch)
+      4. still not clean → the pathway template
+
+    Returns the clean layer with a small `quality` record; no findings are
+    attached."""
     rounds = 0
-    candidates = [(source, lambda: ctrl)]
-    if regenerate:
-        candidates.append(("regenerated", regenerate))
-    for source, make in candidates:
+    cur = autofix(ctrl, case)
+    if review:
+        rounds += 1
         try:
-            cur = make()
+            cur = autofix(review(cur, _blocking(run_rules(cur, case))), case)
         except Exception as e:
-            print(f"WARNING: {source} controller layer unavailable: {e}")
-            continue
-        for _ in range(max_rounds):
-            rounds += 1
-            cur = autofix(cur, case)
-            findings = run_rules(cur, case)
-            if llm:
-                try:
-                    findings += ai_critic(cur, case, llm)
-                except Exception as e:
-                    print(f"WARNING: AI critic failed: {e}")
-            if not _blocking(findings):
-                cur.pop("_fallback", None)
-                cur["quality"] = {"source": source, "rounds": rounds}
-                return cur
-            if not revise:
-                break
-            try:
-                cur = revise(cur, findings)
-            except Exception as e:
-                print(f"WARNING: revision failed: {e}")
-                break
+            print(f"WARNING: AI review failed: {e}")
+    left = _blocking(run_rules(cur, case))
+    if left and revise:
+        rounds += 1
+        try:
+            cur = autofix(revise(cur, left), case)
+            left = _blocking(run_rules(cur, case))
+        except Exception as e:
+            print(f"WARNING: revision failed: {e}")
+    if not left:
+        cur.pop("_fallback", None)
+        cur["quality"] = {"source": source, "rounds": rounds}
+        return cur
     if fallback is None:
         raise ValueError("controller layer could not be made clean and no template was given")
     cur = autofix(fallback(), case)

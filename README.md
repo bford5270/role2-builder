@@ -97,6 +97,16 @@ The `buildspec.yml` artifact selection (`Dockerfile`, `backend/`,
 >   environment variables. They are set on the `r2ra-prod` EB environment, not
 >   in this repo.
 > - The container must **not assume a `DATABASE_URL`**.
+> - Gemini cost guards are built in with safe defaults and need **no** new env
+>   vars. They can optionally be tuned on the EB environment:
+>   `MAX_USD_PER_EXERCISE` (default 5), `MAX_USD_PER_DAY` (25, UTC day, then
+>   `/generate-exercise` returns 429), `MAX_CONCURRENT_JOBS` (2),
+>   `MAX_CALLS_PER_CASE` (4), and thinking-token caps `THINKING_CASE` (1024),
+>   `THINKING_CONTROLLER` (2048), `THINKING_REVIEW` (1024), `THINKING_REVISE`
+>   (512), `THINKING_ORDERS` (1024). Spend is estimated from token usage at
+>   `GEMINI_PRICE_IN_PER_M` / `GEMINI_PRICE_OUT_PER_M` (0.30 / 2.50 USD) and
+>   logged per exercise (`AI usage for ...`) — the in-process meter resets on
+>   container restart, so keep a Google Cloud budget alert as the backstop.
 > - Keep `Dockerfile`, `requirements.txt`, and the buildspec's artifact
 >   selection (`Dockerfile`, `backend/`, `requirements.txt`) intact — the R2RA
 >   deploy consumes exactly that bundle shape.

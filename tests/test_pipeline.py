@@ -25,8 +25,12 @@ def _config(**over):
     return main.ExerciseConfig(**cfg)
 
 
+CALLS = {"controller": 0, "review": 0, "revise": 0}
+
+
 def _fake_llm(prompt, system):
     if system is scenario.CONTROLLER_SYSTEM_PROMPT:
+        CALLS["controller"] += 1
         # Return a structurally complete layer (reuse the template) with one planted error.
         legs = json.loads(prompt.split("CARE CHAIN LEGS (build one tree per leg, same ids):\n")[1].split("\nFOCUS LEG")[0])
         chain = {"nodes": [], "legs": [{"id": l["leg_id"], "title": l["title"], "capability": l["capability"],
@@ -36,13 +40,14 @@ def _fake_llm(prompt, system):
         ctrl.pop("_fallback")
         ctrl["moulage"] = "Alert, GCS 14 (E4, V5, M6)"  # planted: 4+5+6=15
         return json.dumps(ctrl)
-    if "red team" in system:
-        return json.dumps({"findings": [{"severity": "low", "category": "clinical", "location": "x",
-                                         "issue": "stub", "fix": "stub"}]})
-    # Revision: fix what was flagged (the planted GCS error).
-    layer = json.loads(prompt.split("CURRENT CONTROLLER LAYER:\n", 1)[1])
-    layer["moulage"] = "Alert, GCS 15 (E4, V5, M6)"
-    return json.dumps(layer)
+    if system is redteam.CRITIC_SYSTEM_PROMPT:
+        CALLS["review"] += 1
+        # The review sees the rules finding and returns a minimal patch fixing it.
+        assert "GCS" in prompt.split("RULES FINDINGS TO FIX:\n", 1)[1].split("CONTROLLER LAYER")[0]
+        return json.dumps({"ok": False, "findings": [{"category": "gcs", "location": "moulage", "issue": "sum"}],
+                           "patch": {"moulage": "Alert, GCS 15 (E4, V5, M6)"}})
+    CALLS["revise"] += 1
+    raise AssertionError("revision should not be needed when the review fixes everything")
 
 
 def test_chain_follows_fragos():
@@ -83,6 +88,8 @@ def test_full_package(monkeypatch, ai):
     monkeypatch.setattr(main, "generate_annex_q", lambda c, f=None: "Annex text")
     monkeypatch.setattr(main, "generate_medroe", lambda c: "MEDROE text")
     monkeypatch.setattr(main, "generate_road_to_war_prompt", lambda c, a="": "RTW text")
+    for k in CALLS:
+        CALLS[k] = 0
     if ai:
         monkeypatch.setattr(main, "_llm_json", _fake_llm)
     else:
@@ -110,23 +117,55 @@ def test_full_package(monkeypatch, ai):
             assert ctrl["moulage"] == "Alert, GCS 15 (E4, V5, M6)"  # planted error fixed, not reported
         else:
             assert ctrl["quality"]["source"] == "template"
+    if ai:  # cost: exactly one generation + one review per layer, no rework loop
+        assert CALLS == {"controller": 10, "review": 10, "revise": 0}
 
 
-def test_unfixable_layer_regenerates_then_falls_back_to_template():
+def test_unfixable_layer_falls_back_to_template_after_two_calls():
     import json as _json
     fix = _json.loads((__import__("pathlib").Path(__file__).parent / "fixtures" / "erss_ship_sim_dcs.json").read_text())
     broken, case = fix["controller"], fix["case"]
-    calls = {"regen": 0}
+    calls = {"review": 0, "revise": 0}
 
-    def regenerate():
-        calls["regen"] += 1
-        return _json.loads(_json.dumps(broken))
+    def review(c, f):
+        calls["review"] += 1
+        return c
+
+    def revise(c, f):
+        calls["revise"] += 1
+        return c
 
     template = lambda: scenario.fallback_controller(case, broken["chain"], "DCR_DCS")
-    out = redteam.finalize(broken, case, revise=lambda c, f: c, regenerate=regenerate, fallback=template)
-    assert calls["regen"] == 1
+    out = redteam.finalize(broken, case, review=review, revise=revise, fallback=template)
+    assert calls == {"review": 1, "revise": 1}
     assert out["quality"]["source"] == "template"
     assert not redteam._blocking(redteam.run_rules(out, case))
+
+
+def test_patch_replaces_only_listed_fields_and_legs():
+    import json as _json
+    fix = _json.loads((__import__("pathlib").Path(__file__).parent / "fixtures" / "erss_ship_sim_dcs.json").read_text())
+    ctrl = fix["controller"]
+    leg0, leg1 = ctrl["legs"][0], ctrl["legs"][1]
+    out = redteam.apply_patch(ctrl, {"moulage": "new", "chain": "ignored",
+                                     "legs": [{"leg_id": leg1["leg_id"], "considerations": ["x"]}]})
+    assert out["moulage"] == "new" and out["chain"] == ctrl["chain"]
+    assert out["legs"][0] == leg0
+    assert out["legs"][1]["considerations"] == ["x"] and out["legs"][1]["tree"] == leg1["tree"]
+
+
+def test_budget_caps_per_case_calls_and_spares_orders():
+    b = main._Budget(max_calls=2, max_usd=100)
+    b.charge()
+    b.charge()
+    with pytest.raises(main.BudgetExceeded):
+        b.charge()
+    b.charge(essential=True)  # orders always run
+    assert b.exhausted and b.calls == 3
+    d = main._Budget(max_calls=100, max_usd=1.0)
+    d.record(1000, 1000, 1.5)
+    with pytest.raises(main.BudgetExceeded):
+        d.charge()
 
 
 def test_deterministic_fixes_clean_the_reference_where_no_judgment_is_needed():

@@ -139,11 +139,125 @@ def _response_text(response) -> str:
     except Exception:
         return ""
 
+# --- Cost control ------------------------------------------------------------
+# gemini-2.5-flash bills hidden "thinking" tokens as output, and output is ~8x
+# the price of input. Every pipeline call therefore gets an explicit thinking
+# cap, and every call is metered against a per-exercise and a per-day ceiling so
+# one large (or abusive) generation can never run up an open-ended bill.
+def _env_num(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except ValueError:
+        return default
+
+PRICE_IN_PER_M = _env_num("GEMINI_PRICE_IN_PER_M", 0.30)    # USD / 1M input tokens
+PRICE_OUT_PER_M = _env_num("GEMINI_PRICE_OUT_PER_M", 2.50)  # USD / 1M output + thinking tokens
+MAX_USD_PER_EXERCISE = _env_num("MAX_USD_PER_EXERCISE", 5.0)
+MAX_USD_PER_DAY = _env_num("MAX_USD_PER_DAY", 25.0)
+MAX_CONCURRENT_JOBS = int(_env_num("MAX_CONCURRENT_JOBS", 2))
+MAX_CALLS_PER_CASE = int(_env_num("MAX_CALLS_PER_CASE", 4))  # case + controller + review + revise
+
+# Thinking-token caps per call kind (0 disables thinking on 2.5 Flash).
+THINKING = {
+    "case": int(_env_num("THINKING_CASE", 1024)),
+    "controller": int(_env_num("THINKING_CONTROLLER", 2048)),
+    "review": int(_env_num("THINKING_REVIEW", 1024)),
+    "revise": int(_env_num("THINKING_REVISE", 512)),
+    "orders": int(_env_num("THINKING_ORDERS", 1024)),
+}
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+class _Budget:
+    """Per-exercise model-call meter. Non-essential calls (per-case work) stop
+    once the call or dollar ceiling is reached and the pipeline falls back to
+    templates; essential calls (the orders) always run."""
+
+    def __init__(self, max_calls: int, max_usd: float):
+        self.max_calls, self.max_usd = max_calls, max_usd
+        self.calls = self.tok_in = self.tok_out = 0
+        self.usd = 0.0
+        self.exhausted = False
+        self._lock = threading.Lock()
+
+    def charge(self, essential: bool = False):
+        with self._lock:
+            if not essential and (self.calls >= self.max_calls or self.usd >= self.max_usd):
+                self.exhausted = True
+                raise BudgetExceeded(f"exercise AI budget reached ({self.calls} calls, ${self.usd:.2f})")
+            self.calls += 1
+
+    def record(self, tok_in: int, tok_out: int, usd: float):
+        with self._lock:
+            self.tok_in += tok_in
+            self.tok_out += tok_out
+            self.usd += usd
+
+    def summary(self) -> Dict:
+        return {"calls": self.calls, "input_tokens": self.tok_in, "output_tokens": self.tok_out,
+                "est_usd": round(self.usd, 4)}
+
+
+_tl = threading.local()  # .budget: the _Budget of the job this thread is working for
+_spend_lock = threading.Lock()
+_daily_spend = {"day": None, "usd": 0.0}
+
+
+def _bound(budget: Optional["_Budget"], fn):
+    """Run fn on a worker thread with the job's budget attached."""
+    def run(*a, **k):
+        _tl.budget = budget
+        try:
+            return fn(*a, **k)
+        finally:
+            _tl.budget = None
+    return run
+
+
+def _today_spend() -> float:
+    with _spend_lock:
+        return _daily_spend["usd"] if _daily_spend["day"] == datetime.utcnow().date() else 0.0
+
+
+def _call_model(prompt: str, kind: str, system: Optional[str] = None, json_mode: bool = False):
+    """Every pipeline Gemini call goes through here: thinking cap, budget, meter."""
+    budget = getattr(_tl, "budget", None)
+    if budget:
+        budget.charge(essential=(kind == "orders"))
+    config: Dict[str, Any] = {"thinking_config": {"thinking_budget": THINKING[kind]}}
+    if system:
+        config["system_instruction"] = system
+    if json_mode:
+        config["response_mime_type"] = "application/json"
+    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt, config=config)
+    u = getattr(response, "usage_metadata", None)
+    tok_in = (getattr(u, "prompt_token_count", 0) or 0) if u else 0
+    tok_out = ((getattr(u, "candidates_token_count", 0) or 0) + (getattr(u, "thoughts_token_count", 0) or 0)) if u else 0
+    usd = tok_in / 1e6 * PRICE_IN_PER_M + tok_out / 1e6 * PRICE_OUT_PER_M
+    if budget:
+        budget.record(tok_in, tok_out, usd)
+    with _spend_lock:
+        today = datetime.utcnow().date()
+        if _daily_spend["day"] != today:
+            _daily_spend.update(day=today, usd=0.0)
+        _daily_spend["usd"] += usd
+    return response
+
+
+# System prompt → call kind, so the thinking cap follows the job being done.
+_LLM_KIND = {
+    scenario.CONTROLLER_SYSTEM_PROMPT: "controller",
+    redteam.CRITIC_SYSTEM_PROMPT: "review",
+    scenario.REVISE_SYSTEM_PROMPT: "revise",
+}
+
+
 def _llm_json(prompt: str, system: str) -> str:
     """JSON-mode Gemini call used by the scenario controller layer and red team."""
-    response = get_client().models.generate_content(
-        model=GEMINI_MODEL, contents=prompt,
-        config={"system_instruction": system, "response_mime_type": "application/json"})
+    response = _call_model(prompt, _LLM_KIND.get(system, "review"), system=system, json_mode=True)
     text = _response_text(response)
     if not text:
         raise ValueError("empty model response")
@@ -388,11 +502,7 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
         f"Generate the case now."
     )
 
-    response = get_client().models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config={"system_instruction": CASE_SYSTEM_PROMPT, "response_mime_type": "application/json"}
-    )
+    response = _call_model(prompt, "case", system=CASE_SYSTEM_PROMPT, json_mode=True)
 
     def _enforce_zap(data: Dict) -> Dict:
         if "zmist" in data:
@@ -449,7 +559,7 @@ Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {_day_patients(d)}
 {_care_chain_block(config, fragos)}
 Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
     
-    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    response = _call_model(prompt, "orders")
     return response.text
 
 def generate_annex_q(config: ExerciseConfig, fragos: Optional[List[Dict]] = None) -> str:
@@ -479,7 +589,7 @@ Structure per JP 4-02 / MCWP conventions:
 7. COMBAT AND OPERATIONAL STRESS CONTROL
 8. MEDICAL REPORTING AND DOCUMENTATION"""
 
-    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    response = _call_model(prompt, "orders")
     return response.text
 
 def generate_medroe(config: ExerciseConfig) -> str:
@@ -499,7 +609,7 @@ Include:
 - Documentation requirements
 - MASCAL declaration authority and procedures{chr(10) + '- CBRN casualty decontamination-before-treatment rules' if has_cbrn else ''}{chr(10) + '- Detainee care, custody, and medical documentation rules' if has_detainee else ''}"""
     
-    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    response = _call_model(prompt, "orders")
     return response.text
 
 def _road_to_war_fallback(config: "ExerciseConfig") -> str:
@@ -627,9 +737,7 @@ ANNEX Q (MEDICAL CONCEPT OF SUPPORT) SUMMARY:
 
 Now write the Road to War video-generation prompt."""
     try:
-        response = get_client().models.generate_content(
-            model=GEMINI_MODEL, contents=prompt
-        )
+        response = _call_model(prompt, "orders")
         text = _response_text(response)
         if text:
             header = f"ROAD TO WAR — VIDEO GENERATION PROMPT\nExercise: {config.exercise_name}\n\nPaste the prompt below into Claude to generate the Road to War video.\n\n"
@@ -1532,7 +1640,7 @@ def _job_get(job_id: str):
     return None
 
 def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases: List[Dict],
-                             fragos: List[Dict], progress=None) -> None:
+                             fragos: List[Dict], progress=None, budget: Optional[_Budget] = None) -> None:
     """Attach a red-teamed controller layer to every scheduled case, built on the
     care chain in force (WARNO base chain + active FRAGOs) at its arrival time."""
     rows = [r for r in schedule if "arr_raw" in r]
@@ -1546,22 +1654,23 @@ def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases
         pathway = scenario.determine_pathway(case, chain)
         in_force = [f for f in fragos if f["number"] in chain["fragos"]]
         maritime = scenario._is_maritime(config, day)
-        generate = lambda: scenario.generate_controller(case, chain, pathway, in_force, maritime, _llm_json)
         template = lambda: scenario.fallback_controller(case, chain, pathway)
         try:
-            first = generate()
+            first = scenario.generate_controller(case, chain, pathway, in_force, maritime, _llm_json)
         except Exception as e:
             print(f"WARNING: controller layer generation failed (case {i + 1}): {e} — using template")
             return redteam.finalize(template(), case, fallback=template, source="template")
-        # Red team → fix → re-check until clean; regenerate once; template last.
-        return redteam.finalize(first, case, llm=_llm_json,
+        # One expert review-and-repair call; one targeted revision only if the
+        # rules still fail; template last. At most 3 model calls per layer.
+        return redteam.finalize(first, case,
+                                review=lambda c, f: scenario.review_controller(c, case, f, _llm_json),
                                 revise=lambda c, f: scenario.revise_controller(c, f, _llm_json),
-                                regenerate=generate, fallback=template)
+                                fallback=template)
 
     n = len(rows)
     done = 0
     with ThreadPoolExecutor(max_workers=min(5, max(n, 1))) as pool:
-        futures = {pool.submit(one, i): i for i in range(n)}
+        futures = {pool.submit(_bound(budget, one), i): i for i in range(n)}
         for fut in as_completed(futures):
             i = futures[fut]
             try:
@@ -1627,11 +1736,14 @@ def _run_generation(config: ExerciseConfig, job_id: str):
     try:
         tasks = _build_case_tasks(config)
         total = len(tasks)
+        budget = _Budget(max_calls=MAX_CALLS_PER_CASE * total, max_usd=MAX_USD_PER_EXERCISE)
+        _tl.budget = budget
         _job_update(job_id, progress="Generating cases...", completed=0, total=total)
 
         cases_results: Dict[int, Dict] = {}
         with ThreadPoolExecutor(max_workers=min(5, max(total, 1))) as pool:
-            futures = {pool.submit(_generate_one, t, config.environment, config.region, config.selected_mets): i
+            futures = {pool.submit(_bound(budget, _generate_one), t, config.environment, config.region,
+                                   config.selected_mets): i
                        for i, t in enumerate(tasks)}
             completed = 0
             for future in as_completed(futures):
@@ -1660,13 +1772,14 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         _job_update(job_id, progress="Building decision trees (red team + fixes)...")
         _build_controller_layers(
             config, schedule, cases, fragos,
-            lambda d, n: _job_update(job_id, progress=f"Decision trees (red-teamed and fixed): {d} / {n}"))
+            lambda d, n: _job_update(job_id, progress=f"Decision trees (red-teamed and fixed): {d} / {n}"),
+            budget)
 
         _job_update(job_id, progress="Generating orders...")
         with ThreadPoolExecutor(max_workers=3) as pool:
-            f_warno = pool.submit(generate_warno, config, fragos)
-            f_annex = pool.submit(generate_annex_q, config, fragos)
-            f_medroe = pool.submit(generate_medroe, config)
+            f_warno = pool.submit(_bound(budget, generate_warno), config, fragos)
+            f_annex = pool.submit(_bound(budget, generate_annex_q), config, fragos)
+            f_medroe = pool.submit(_bound(budget, generate_medroe), config)
             warno = f_warno.result()
             annex = f_annex.result()
             medroe = f_medroe.result()
@@ -1699,21 +1812,33 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         templated = sum(1 for c in cases if (c.get("controller") or {}).get("quality", {}).get("source") == "template")
         if templated:
             print(f"WARNING: {templated}/{total} controller layers shipped as the pathway template")
+        usage = budget.summary()
+        print(f"AI usage for '{config.exercise_name}' ({total} cases): {usage['calls']} calls, "
+              f"{usage['input_tokens']} in / {usage['output_tokens']} out tokens, est ${usage['est_usd']:.2f}")
         done_msg = "Package ready!" if not fallback_count else (
             f"Package ready — NOTE: {fallback_count} of {total} cases used the offline "
             f"fallback template (AI generation failed); review the case book before use.")
+        if budget.exhausted:
+            done_msg += (f" The exercise hit its AI spending cap (${MAX_USD_PER_EXERCISE:.2f}); remaining cases "
+                         f"and decision trees used templates.")
         _job_update(job_id, status="complete", progress=done_msg,
-                    completed=total, total=total, token=token,
+                    completed=total, total=total, token=token, usage=usage,
                     filename=f"{config.exercise_name}_Package.zip")
     except Exception as e:
         import traceback
         traceback.print_exc()
         _job_update(job_id, status="error", progress=str(e), error=str(e))
+    finally:
+        _tl.budget = None
 
 
 @app.post("/generate-exercise")
 async def generate_exercise(config: ExerciseConfig):
     _purge_stale_stores()
+    if sum(1 for j in _jobs.values() if j.get("status") == "running") >= MAX_CONCURRENT_JOBS:
+        raise HTTPException(status_code=429, detail="Another exercise is still generating — try again in a few minutes.")
+    if _today_spend() >= MAX_USD_PER_DAY:
+        raise HTTPException(status_code=429, detail="Daily AI generation limit reached — try again tomorrow (UTC).")
     job_id = str(uuid.uuid4())
     _job_create(job_id)
     threading.Thread(target=_run_generation, args=(config, job_id), daemon=True).start()

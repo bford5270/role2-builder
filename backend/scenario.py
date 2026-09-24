@@ -10,6 +10,11 @@ import json
 import re
 from typing import Callable, Dict, List, Optional
 
+try:
+    from backend import redteam
+except ImportError:  # running from inside backend/
+    import redteam
+
 # --- Care chain ------------------------------------------------------------
 # A chain is an ordered list of nodes; a leg is the care delivered at one node
 # up to handoff to the next. The Role 2 leg (care AT the surgical/resuscitative
@@ -269,6 +274,18 @@ RULES
 - Every wound needs anatomic region, side (L, R, midline, bilateral), surface (anterior or posterior), type,
   and prehospital intervention.
 
+SELF-CHECK BEFORE YOU ANSWER — an expert red team reviews this output and every error costs a rework, so
+get it right the first time:
+1. Physiology: green/red vitals follow from the injuries and the care given; deterioration is believable in
+   pace and pattern (hemorrhagic, obstructive, neurologic).
+2. Guidance: JTS CPGs (DCR, hemorrhagic shock, thoracic trauma, TXA, calcium, hypothermia, PCC,
+   analgesia/sedation) and TCCC for prehospital legs.
+3. Echelon: every intervention in each leg's tree is available at that node's capability.
+4. Failure paths cover the likely team errors (e.g., PPV without decompression, missed posterior wound,
+   under-resuscitation, hypothermia).
+5. Consistency: laterality, GCS = E+V+M, thresholds, times, doses, turnover vs arrival vitals.
+6. Moulage: the sim tech can build it, and the findings support the decisions asked.
+
 EXPERT REFERENCE — focus-leg tree from an expert-built ERSS (afloat) DCS case, mortar strike, BLE amputations
 with ineffective TQs, bilateral chest wounds, untreated posterior wound. Match this depth and style:
   Pt arrival/primary survey → Massive hemorrhage, blood sweep [finding: bleeding from BLE amputations continues
@@ -345,8 +362,10 @@ def controller_prompt(case: Dict, chain: Dict, pathway: str, fragos_in_force: Li
 
 
 REVISE_SYSTEM_PROMPT = """You are revising a medical simulation controller layer after red-team review.
-Fix EVERY finding listed without changing anything that was not flagged. Return the full corrected JSON
-in exactly the same structure you were given. Output JSON only."""
+Fix EVERY finding listed without changing anything that was not flagged. Return JSON only, containing ONLY
+the top-level fields you changed, each in full (any of "wounds", "moulage", "critical_decisions",
+"critical_actions", "vitals_tracks", "controller_note", "burns"), plus "legs": [ONLY the legs you changed,
+each a full leg object with its exact "leg_id"]. Leave out everything you did not change."""
 
 
 def _parse_json(text: str) -> Dict:
@@ -423,9 +442,18 @@ def generate_controller(case: Dict, chain: Dict, pathway: str, fragos_in_force: 
 def revise_controller(ctrl: Dict, findings: List[Dict], llm: Callable[[str, str], str]) -> Dict:
     body = {k: v for k, v in ctrl.items() if k not in ("chain", "pathway", "focus_leg", "quality")}
     prompt = ("FINDINGS TO FIX:\n" + json.dumps(findings, indent=1)
-              + "\n\nCURRENT CONTROLLER LAYER:\n" + json.dumps(body, indent=1))
-    revised = _parse_json(llm(prompt, REVISE_SYSTEM_PROMPT))
-    return normalize_controller(revised, ctrl["chain"], ctrl["pathway"])
+              + "\n\nCURRENT CONTROLLER LAYER:\n" + json.dumps(body, separators=(",", ":")))
+    patch = _parse_json(llm(prompt, REVISE_SYSTEM_PROMPT))
+    return normalize_controller(redteam.apply_patch(ctrl, patch), ctrl["chain"], ctrl["pathway"])
+
+
+def review_controller(ctrl: Dict, case: Dict, rules_findings: List[Dict],
+                      llm: Callable[[str, str], str]) -> Dict:
+    """One-call expert review + repair; returns the layer unchanged when sound."""
+    patch = redteam.ai_review(ctrl, case, rules_findings, llm)
+    if not patch:
+        return ctrl
+    return normalize_controller(redteam.apply_patch(ctrl, patch), ctrl["chain"], ctrl["pathway"])
 
 
 # --- Offline fallback -----------------------------------------------------
