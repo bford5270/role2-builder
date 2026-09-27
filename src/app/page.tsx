@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.role2builder.org';
 
 export default function SetupPage() {
   const [exerciseName, setExerciseName] = useState("");

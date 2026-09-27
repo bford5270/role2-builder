@@ -8,7 +8,7 @@ import {
   fromExercise, gcsTotal, nextChange, pointAt,
 } from '@/lib/controller';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://role2-builder-production.up.railway.app';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.role2builder.org';
 
 // --- Simulation state --------------------------------------------------------
 // Sim time runs in seconds. The green clock pauses while the patient is on the

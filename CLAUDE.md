@@ -19,6 +19,13 @@ architecture, the runtime contract (port 8000; env vars `CORS_ORIGINS`
 **README.md § Deployment Architecture** — treat that section as
 authoritative and keep it current.
 
+The frontend must call `https://api.role2builder.org` (the code default;
+Vercel's `NEXT_PUBLIC_API_URL`, if set, must match). A legacy Railway
+service (`kind-caring` / `role2-builder`) kept auto-deploying from `main`
+and served all real traffic until Sep 2026 — it is being retired; do not
+point anything at `*.up.railway.app`. The Gemini key is IP-restricted to
+the EB instance's Elastic IP (3.225.116.45).
+
 Deploys are fully automatic: push to `main` → GitHub Actions
 (`.github/workflows/deploy.yml`, OIDC) → `role2-builder` pipeline
 publishes the bundle to S3 → EventBridge rule `rb-publish-chains-r2ra`
