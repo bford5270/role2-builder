@@ -1,8 +1,8 @@
 "use client";
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { API_BASE } from '@/lib/api';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.role2builder.org';
 
 export default function SetupPage() {
   const [exerciseName, setExerciseName] = useState("");

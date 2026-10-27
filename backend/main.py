@@ -98,9 +98,14 @@ if not CORS_ORIGINS:
     # Env still set to "*" (the old default): fall back to the site, not to nothing.
     CORS_ORIGINS = _DEFAULT_ORIGINS.split(",")
 
+# Vercel URLs for this project: the stable alias and per-deployment preview
+# URLs, which carry the team suffix only this account's projects can use.
+CORS_ORIGIN_REGEX = r"https://role2-builder(-[a-z0-9-]+-brians-projects-0545fc67)?\.vercel\.app"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { API_BASE } from '@/lib/api';
 
 interface ExerciseSummary {
   id: number;
@@ -11,7 +12,6 @@ interface ExerciseSummary {
   total_cases: number;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.role2builder.org';
 
 export default function HistoricExercisesPage() {
   const [exercises, setExercises] = useState<ExerciseSummary[]>([]);

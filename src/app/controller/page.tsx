@@ -7,8 +7,8 @@ import {
   type CasesExport, type CriticalAction, type Vitals, PATHWAY_LABELS,
   fromExercise, gcsTotal, nextChange, pointAt,
 } from '@/lib/controller';
+import { API_BASE } from '@/lib/api';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.role2builder.org';
 
 // --- Simulation state --------------------------------------------------------
 // Sim time runs in seconds. The green clock pauses while the patient is on the

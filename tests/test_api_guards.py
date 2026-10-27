@@ -47,3 +47,22 @@ def test_star_env_falls_back_to_site(monkeypatch):
     assert "https://www.role2builder.org" in m.CORS_ORIGINS
     monkeypatch.delenv("CORS_ORIGINS")
     importlib.reload(main)
+
+
+def test_cors_allows_own_vercel_previews_only():
+    def acao(origin):
+        return client.options("/generate-name", headers={
+            "Origin": origin, "Access-Control-Request-Method": "POST"}).headers.get("access-control-allow-origin")
+    ok = "https://role2-builder-5kd17xv78-brians-projects-0545fc67.vercel.app"
+    assert acao(ok) == ok
+    assert acao("https://role2-builder.vercel.app") == "https://role2-builder.vercel.app"
+    assert acao("https://role2-builder-evil.vercel.app") is None
+    assert acao("https://role2-builder-x-brians-projects-0545fc67.vercel.app.evil.com") is None
+
+
+def test_frontend_has_no_railway_address():
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / "src"
+    hits = [str(p) for p in root.rglob("*.ts*") if "railway" in p.read_text().lower()
+            and p.name != "api.ts"]
+    assert hits == []

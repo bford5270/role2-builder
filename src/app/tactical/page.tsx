@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { API_BASE } from '@/lib/api';
 
 interface DayConfig {
   day_number: number;
@@ -51,7 +52,6 @@ const MASCAL_ETIOLOGIES = [
   'UAS/Drone Strike'
 ];
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.role2builder.org';
 
 export default function TacticalScenarioPage() {
   const [config, setConfig] = useState<ExerciseConfig | null>(null);

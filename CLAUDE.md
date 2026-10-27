@@ -19,8 +19,10 @@ architecture, the runtime contract (port 8000; env vars `CORS_ORIGINS`
 **README.md § Deployment Architecture** — treat that section as
 authoritative and keep it current.
 
-The frontend must call `https://api.role2builder.org` (the code default;
-Vercel's `NEXT_PUBLIC_API_URL`, if set, must match). A legacy Railway
+The frontend must call `https://api.role2builder.org`, set once in
+`src/lib/api.ts`. The code no longer reads `NEXT_PUBLIC_API_URL`: that Vercel
+variable still pointed at Railway and was inlined into every build. Override
+with `NEXT_PUBLIC_ROLE2_API_URL` only for local or preview testing. A legacy Railway
 service (`kind-caring` / `role2-builder`) kept auto-deploying from `main`
 and served all real traffic until Sep 2026 — it is being retired; do not
 point anything at `*.up.railway.app`. The Gemini key is IP-restricted to
