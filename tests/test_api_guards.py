@@ -1,0 +1,40 @@
+"""Abuse guards on the public API: CORS allow-list, per-client limits, input caps."""
+import os
+
+os.environ.pop("GEMINI_API_KEY", None)
+os.environ.pop("CORS_ORIGINS", None)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from backend import main  # noqa: E402
+
+client = TestClient(main.app)
+
+
+def test_cors_rejects_unknown_origin():
+    r = client.options("/generate-exercise", headers={
+        "Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_cors_allows_site():
+    r = client.options("/generate-exercise", headers={
+        "Origin": "https://www.role2builder.org", "Access-Control-Request-Method": "POST"})
+    assert r.headers.get("access-control-allow-origin") == "https://www.role2builder.org"
+    assert "access-control-allow-credentials" not in r.headers
+
+
+def test_name_requests_are_limited_per_client(monkeypatch):
+    monkeypatch.setattr(main, "MAX_NAMES_PER_CLIENT_PER_HOUR", 2)
+    main._rate_hits.clear()
+    hdr = {"X-Forwarded-For": "203.0.113.7"}
+    codes = [client.post("/generate-name", json={}, headers=hdr).status_code for _ in range(3)]
+    assert codes[-1] == 429
+    # a different client is unaffected
+    assert client.post("/generate-name", json={}, headers={"X-Forwarded-For": "203.0.113.8"}).status_code != 429
+    main._rate_hits.clear()
+
+
+def test_oversized_input_rejected():
+    r = client.post("/generate-name", json={"region": "x" * 5000})
+    assert r.status_code == 422

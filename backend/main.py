@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from fastapi import FastAPI, Response, HTTPException
+from fastapi import FastAPI, Response, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -89,15 +89,48 @@ if engine:
     except Exception as _e:
         print(f"WARNING: DB column migration (fragos) failed: {_e}")
 
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+# Explicit allow-list. The API uses no cookies or auth headers, so
+# credentials stay off and "*" is never the fallback.
+_DEFAULT_ORIGINS = "https://www.role2builder.org,https://role2builder.org,http://localhost:3000"
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", _DEFAULT_ORIGINS).split(",")
+                if o.strip() and o.strip() != "*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
+
+# Per-client limits on the endpoints that spend Gemini money, so one caller
+# can't drain the shared daily cap (MAX_USD_PER_DAY) for everyone else.
+# In-memory, single process — same model as the spend guards below.
+MAX_EXERCISES_PER_CLIENT_PER_DAY = int(os.getenv("MAX_EXERCISES_PER_CLIENT_PER_DAY", "3"))
+MAX_NAMES_PER_CLIENT_PER_HOUR = int(os.getenv("MAX_NAMES_PER_CLIENT_PER_HOUR", "30"))
+_rate_lock = threading.Lock()
+_rate_hits: Dict[str, List[datetime]] = {}
+
+
+def _client_key(request: Request) -> str:
+    # CloudFront appends the viewer address as the last X-Forwarded-For entry
+    # and this container sits directly behind it, so use that entry.
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[-1].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_client_rate(request: Request, bucket: str, limit: int, window: timedelta, detail: str) -> None:
+    now = datetime.utcnow()
+    key = f"{bucket}:{_client_key(request)}"
+    with _rate_lock:
+        hits = [t for t in _rate_hits.get(key, []) if now - t < window]
+        if len(hits) >= limit:
+            _rate_hits[key] = hits
+            raise HTTPException(status_code=429, detail=detail)
+        hits.append(now)
+        _rate_hits[key] = hits
 
 _client = None
 
@@ -315,28 +348,28 @@ def _new_zap() -> str:
 
 # Pydantic Models
 class DayConfig(BaseModel):
-    day_number: int = Field(ge=1)
-    tactical_setting: str
+    day_number: int = Field(ge=1, le=30)
+    tactical_setting: str = Field(max_length=500)
     total_patients: int = Field(ge=0, le=60)
     total_waves: int = Field(ge=1, le=12)
     night_ops: bool = False
     mascal: bool = False
-    mascal_etiology: Optional[str] = None
+    mascal_etiology: Optional[str] = Field(default=None, max_length=80)
     mascal_patients: Optional[int] = Field(default=None, ge=1, le=30)
     cbrn: bool = False
     detainee_ops: bool = False
 
 class ExerciseConfig(BaseModel):
-    exercise_name: str
+    exercise_name: str = Field(max_length=120)
     duration: int = Field(ge=1, le=30)
-    supported_unit: str
-    environment: str
-    threat_level: str
-    region: str
-    selected_mets: List[str]
-    selected_footprint: List[str]
-    specialists: Dict[str, int]
-    days: List[DayConfig]
+    supported_unit: str = Field(max_length=120)
+    environment: str = Field(max_length=40)
+    threat_level: str = Field(max_length=40)
+    region: str = Field(max_length=120)
+    selected_mets: List[str] = Field(max_length=100)
+    selected_footprint: List[str] = Field(max_length=50)
+    specialists: Dict[str, int] = Field(max_length=50)
+    days: List[DayConfig] = Field(max_length=30)
 
 # Case data
 DNBI_BY_ENVIRONMENT = {
@@ -1491,12 +1524,21 @@ async def root():
 async def health():
     return {"status": "healthy"}
 
+class NameRequest(BaseModel):
+    environment: str = Field(default="General", max_length=40)
+    region: str = Field(default="", max_length=80)
+    threatLevel: str = Field(default="", max_length=40)
+    supportedUnit: str = Field(default="Medical", max_length=80)
+
+
 @app.post("/generate-name")
-async def generate_name_endpoint(data: dict):
-    env = data.get("environment", "General")
-    region = data.get("region", "")
-    threat = data.get("threatLevel", "")
-    unit = data.get("supportedUnit", "Medical")
+async def generate_name_endpoint(data: NameRequest, request: Request):
+    _check_client_rate(request, "name", MAX_NAMES_PER_CLIENT_PER_HOUR, timedelta(hours=1),
+                       "Too many name requests — try again later.")
+    env = data.environment
+    region = data.region
+    threat = data.threatLevel
+    unit = data.supportedUnit
     
     prompt = f"""Generate one military exercise name for a USMC {unit} HSS training exercise in {env} terrain, {region}, facing a {threat} threat.
 
@@ -1833,8 +1875,10 @@ def _run_generation(config: ExerciseConfig, job_id: str):
 
 
 @app.post("/generate-exercise")
-async def generate_exercise(config: ExerciseConfig):
+async def generate_exercise(config: ExerciseConfig, request: Request):
     _purge_stale_stores()
+    _check_client_rate(request, "exercise", MAX_EXERCISES_PER_CLIENT_PER_DAY, timedelta(days=1),
+                       "Exercise generation limit reached for today — try again tomorrow.")
     if sum(1 for j in _jobs.values() if j.get("status") == "running") >= MAX_CONCURRENT_JOBS:
         raise HTTPException(status_code=429, detail="Another exercise is still generating — try again in a few minutes.")
     if _today_spend() >= MAX_USD_PER_DAY:
