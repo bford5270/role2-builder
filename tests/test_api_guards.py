@@ -38,3 +38,12 @@ def test_name_requests_are_limited_per_client(monkeypatch):
 def test_oversized_input_rejected():
     r = client.post("/generate-name", json={"region": "x" * 5000})
     assert r.status_code == 422
+
+
+def test_star_env_falls_back_to_site(monkeypatch):
+    import importlib
+    monkeypatch.setenv("CORS_ORIGINS", "*")
+    m = importlib.reload(main)
+    assert "https://www.role2builder.org" in m.CORS_ORIGINS
+    monkeypatch.delenv("CORS_ORIGINS")
+    importlib.reload(main)

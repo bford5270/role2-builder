@@ -94,6 +94,9 @@ if engine:
 _DEFAULT_ORIGINS = "https://www.role2builder.org,https://role2builder.org,http://localhost:3000"
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", _DEFAULT_ORIGINS).split(",")
                 if o.strip() and o.strip() != "*"]
+if not CORS_ORIGINS:
+    # Env still set to "*" (the old default): fall back to the site, not to nothing.
+    CORS_ORIGINS = _DEFAULT_ORIGINS.split(",")
 
 app.add_middleware(
     CORSMiddleware,
