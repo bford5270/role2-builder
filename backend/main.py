@@ -1,4 +1,6 @@
 import os
+import re
+import time
 import random
 import json
 import zipfile
@@ -147,6 +149,15 @@ _client = None
 # (e.g. gemini-2.0-flash was decommissioned with a 404) is a one-variable fix
 # on Railway rather than a code change + redeploy.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+_active_model = GEMINI_MODEL  # may move to a newer Flash model if the configured one is retired (see _switch_model)
+
+# Every call gets a hard timeout (a hung request must not pin a worker thread forever) and a few
+# SDK-level retries for rate limits and server errors. Failed requests are not billed.
+GEMINI_TIMEOUT_S = float(os.getenv("GEMINI_TIMEOUT_S", "120"))
+GEMINI_ATTEMPTS = int(os.getenv("GEMINI_ATTEMPTS", "3"))
+# Simulated combat-casualty content trips Gemini's default safety filters; relax them (as /generate-name
+# already did). Set GEMINI_RELAX_SAFETY=0 to use Google's defaults.
+GEMINI_RELAX_SAFETY = os.getenv("GEMINI_RELAX_SAFETY", "1") != "0"
 
 def get_client():
     global _client
@@ -154,8 +165,91 @@ def get_client():
         key = os.getenv("GEMINI_API_KEY")
         if not key:
             raise HTTPException(status_code=503, detail="GEMINI_API_KEY not set on server")
-        _client = genai.Client(api_key=key)
+        from google.genai import types
+        _client = genai.Client(api_key=key, http_options=types.HttpOptions(
+            timeout=int(GEMINI_TIMEOUT_S * 1000),
+            retry_options=types.HttpRetryOptions(attempts=GEMINI_ATTEMPTS, initial_delay=1.0, max_delay=10.0,
+                                                 http_status_codes=[429, 500, 502, 503, 504])))
     return _client
+
+
+class AIError(RuntimeError):
+    """A classified Gemini failure, so callers and /health/ai can say what went wrong."""
+    def __init__(self, kind: str, detail: str = ""):
+        super().__init__(f"{kind}: {detail}" if detail else kind)
+        self.kind, self.detail = kind, detail
+
+
+# What to tell the user when cases fall back to templates, by failure kind.
+AI_KIND_TEXT = {
+    "model_not_found": "the AI model is unavailable (retired or renamed)",
+    "auth_or_ip": "the AI key was rejected (invalid, or blocked by its IP restriction)",
+    "quota": "the AI quota or rate limit was hit",
+    "unavailable": "the AI service was unreachable or timed out",
+    "blocked": "the AI safety filter blocked the response",
+    "truncated": "the AI response was cut off",
+    "budget": "the exercise AI budget was reached",
+}
+
+def _classify_ai_error(e: Exception) -> str:
+    code = getattr(e, "code", None)
+    msg = str(e).lower()
+    if isinstance(code, int):
+        if code == 404:
+            return "model_not_found"
+        if code in (401, 403) or (code == 400 and "api key" in msg):
+            return "auth_or_ip"
+        if code == 429:
+            return "quota"
+        if code in (408, 500, 502, 503, 504):
+            return "unavailable"
+    if isinstance(e, (TimeoutError, ConnectionError)) or type(e).__name__ in (
+            "ReadTimeout", "ConnectTimeout", "TimeoutException", "ConnectError", "RemoteProtocolError"):
+        return "unavailable"
+    return "other"
+
+_ai_lock = threading.Lock()
+_ai_state: Dict[str, Any] = {"ok": None, "kind": None, "model": GEMINI_MODEL, "ts": None}
+
+def _note_ai(ok: bool, kind: Optional[str] = None) -> None:
+    """Remember the outcome of the latest real model call for /health/ai."""
+    with _ai_lock:
+        _ai_state.update(ok=ok, kind=kind, model=_active_model, ts=datetime.utcnow().isoformat() + "Z")
+
+def _discover_model() -> Optional[str]:
+    """Newest stable Flash model this key can call (ids like gemini-2.5-flash, never -lite/-preview/-exp)."""
+    best = None
+    for m in get_client().models.list():
+        name = (getattr(m, "name", "") or "").replace("models/", "")
+        found = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash", name)
+        if found and "generateContent" in (getattr(m, "supported_actions", None) or []):
+            if best is None or float(found.group(1)) > best[0]:
+                best = (float(found.group(1)), name)
+    return best[1] if best else None
+
+def _switch_model(failed_model: str) -> bool:
+    """The configured model returned 404 (retired): move to the newest stable Flash. True if it changed."""
+    global _active_model
+    with _ai_lock:
+        if _active_model != failed_model:
+            return True  # another thread already switched
+        try:
+            found = _discover_model()
+        except Exception as e:
+            print(f"WARNING: could not list Gemini models while recovering from a 404 on {failed_model}: {e}")
+            return False
+        if not found or found == failed_model:
+            return False
+        _active_model = found
+    print(f"WARNING: Gemini model '{failed_model}' was not found; switched to '{found}'. "
+          f"Set GEMINI_MODEL={found} to make this permanent and check pricing.")
+    return True
+
+def _safety_settings():
+    from google.genai import types
+    return [types.SafetySetting(category=c, threshold="BLOCK_NONE") for c in (
+        "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")]
 
 def _response_text(response) -> str:
     """Safely pull text out of a Gemini response.
@@ -206,6 +300,7 @@ THINKING = {
     "review": int(_env_num("THINKING_REVIEW", 1024)),
     "revise": int(_env_num("THINKING_REVISE", 512)),
     "orders": int(_env_num("THINKING_ORDERS", 1024)),
+    "probe": 0,  # /health/ai: a one-word reply needs no thinking
 }
 
 
@@ -264,6 +359,22 @@ def _today_spend() -> float:
         return _daily_spend["usd"] if _daily_spend["day"] == datetime.utcnow().date() else 0.0
 
 
+def _raise_if_unusable(response, json_mode: bool) -> None:
+    """Turn a 200 response with no usable output (safety block, cut-off JSON) into a classified error."""
+    cands = getattr(response, "candidates", None) or []
+    if not cands:
+        reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+        if reason:
+            raise AIError("blocked", str(reason))
+        return
+    finish = getattr(cands[0], "finish_reason", None)
+    name = getattr(finish, "name", str(finish or ""))
+    if name in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII") and not _response_text(response):
+        raise AIError("blocked", name)
+    if json_mode and name == "MAX_TOKENS":
+        raise AIError("truncated", name)
+
+
 def _call_model(prompt: str, kind: str, system: Optional[str] = None, json_mode: bool = False):
     """Every pipeline Gemini call goes through here: thinking cap, budget, meter."""
     budget = getattr(_tl, "budget", None)
@@ -274,7 +385,30 @@ def _call_model(prompt: str, kind: str, system: Optional[str] = None, json_mode:
         config["system_instruction"] = system
     if json_mode:
         config["response_mime_type"] = "application/json"
-    response = get_client().models.generate_content(model=GEMINI_MODEL, contents=prompt, config=config)
+    if GEMINI_RELAX_SAFETY:
+        config["safety_settings"] = _safety_settings()
+    used = _active_model
+    try:
+        try:
+            response = get_client().models.generate_content(model=used, contents=prompt, config=config)
+        except HTTPException:
+            raise
+        except Exception as e:
+            if _classify_ai_error(e) != "model_not_found" or not _switch_model(used):
+                raise
+            used = _active_model  # the configured model was retired: retry once on the replacement
+            response = get_client().models.generate_content(model=used, contents=prompt, config=config)
+        _raise_if_unusable(response, json_mode)
+    except HTTPException:
+        raise
+    except AIError as e:
+        _note_ai(False, e.kind)
+        raise
+    except Exception as e:
+        kind = _classify_ai_error(e)
+        _note_ai(False, kind)
+        raise AIError(kind, str(e)[:200]) from e
+    _note_ai(True)
     u = getattr(response, "usage_metadata", None)
     tok_in = (getattr(u, "prompt_token_count", 0) or 0) if u else 0
     tok_out = ((getattr(u, "candidates_token_count", 0) or 0) + (getattr(u, "thoughts_token_count", 0) or 0)) if u else 0
@@ -1539,6 +1673,26 @@ async def root():
 async def health():
     return {"status": "healthy"}
 
+@app.get("/health/ai")
+def ai_health(request: Request, probe: bool = False):
+    """Is Gemini working? Without ?probe=1 this only reports the outcome of the latest real call (free).
+    With it, make one tiny live call (about $0.00001; limited to 6 an hour per client) and say what failed."""
+    result: Dict[str, Any] = {"configured_model": GEMINI_MODEL, "active_model": _active_model}
+    if probe:
+        _check_client_rate(request, "aiprobe", 6, timedelta(hours=1), "AI probe limit reached — try again later.")
+        started = time.monotonic()
+        try:
+            _call_model("Reply with the single word OK.", "probe")
+            result["probe"] = {"ok": True, "ms": round((time.monotonic() - started) * 1000)}
+        except HTTPException as e:  # e.g. GEMINI_API_KEY not set
+            result["probe"] = {"ok": False, "kind": "no_key" if e.status_code == 503 else "other"}
+        except AIError as e:
+            result["probe"] = {"ok": False, "kind": e.kind, "meaning": AI_KIND_TEXT.get(e.kind, "an AI error occurred")}
+        result["active_model"] = _active_model
+    with _ai_lock:
+        result["last_call"] = dict(_ai_state)
+    return result
+
 class NameRequest(BaseModel):
     environment: str = Field(default="General", max_length=40)
     region: str = Field(default="", max_length=80)
@@ -1587,19 +1741,21 @@ Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
                 ],
             )
             response = get_client().models.generate_content(
-                model=GEMINI_MODEL, contents=prompt, config=gen_config
+                model=_active_model, contents=prompt, config=gen_config
             )
         except Exception:
             # Older/newer SDKs may not accept the config shape above — retry plain.
             response = get_client().models.generate_content(
-                model=GEMINI_MODEL, contents=prompt
+                model=_active_model, contents=prompt
             )
         name = _response_text(response).replace('"', '').replace("'", "")
+        _note_ai(bool(name), None if name else "blocked")
         # Models sometimes return a short explanation before the name.
         name = name.splitlines()[0].strip() if name else ""
     except HTTPException:
         raise  # e.g. GEMINI_API_KEY missing — surface it as-is
     except Exception as e:
+        _note_ai(False, _classify_ai_error(e))
         print(f"WARNING: generate-name AI call failed, using local fallback: {e}")
 
     if not name:
@@ -1640,7 +1796,8 @@ def _generate_one(task: tuple, environment: str, region: str, mets: Optional[Lis
     except Exception as e:
         print(f"WARNING: case generation failed ({case_type}): {e} — using offline fallback")
         case = create_fallback_case(case_type, mech, is_trauma)
-        case["_fallback"] = True
+        # Truthy marker that also records why, so the job message can say what went wrong.
+        case["_fallback"] = getattr(e, "kind", None) or ("budget" if isinstance(e, BudgetExceeded) else "other")
         return case
 
 # In-memory job store — always used as primary, DB synced as best-effort
@@ -1809,9 +1966,13 @@ def _run_generation(config: ExerciseConfig, job_id: str):
                 _job_update(job_id, progress=f"Generating cases: {completed} / {total}", completed=completed)
 
         cases = [cases_results[i] for i in range(total)]
-        fallback_count = sum(1 for c in cases if c.pop("_fallback", False))
+        fallback_reasons = [c.pop("_fallback") for c in cases if c.get("_fallback")]
+        fallback_count = len(fallback_reasons)
+        fallback_why = ""
         if fallback_count:
-            print(f"WARNING: {fallback_count}/{total} cases used the offline fallback")
+            top = max(set(fallback_reasons), key=fallback_reasons.count)
+            fallback_why = AI_KIND_TEXT.get(top, "an AI error occurred")
+            print(f"WARNING: {fallback_count}/{total} cases used the offline fallback ({top})")
         _job_update(job_id, progress="Generating documents...", completed=total)
 
         # Pool cases by (day, MASCAL) so each schedule slot draws a case that
@@ -1881,7 +2042,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
               f"{usage['input_tokens']} in / {usage['output_tokens']} out tokens, est ${usage['est_usd']:.2f}")
         done_msg = "Package ready!" if not fallback_count else (
             f"Package ready — NOTE: {fallback_count} of {total} cases used the offline "
-            f"fallback template (AI generation failed); review the case book before use.")
+            f"fallback template ({fallback_why}); review the case book before use.")
         if budget.exhausted:
             done_msg += (f" The exercise hit its AI spending cap (${MAX_USD_PER_EXERCISE:.2f}); remaining cases "
                          f"and decision trees used templates.")
