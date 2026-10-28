@@ -272,6 +272,28 @@ def check_handover(ctrl: Dict) -> List[Dict]:
     return []
 
 
+def check_arrival_vitals(ctrl: Dict, case: Dict) -> List[Dict]:
+    """The case book prints the case's first DCR vitals as the arrival vitals; the green track must start there.
+    Low severity: the single expert review fixes it, it never triggers an extra model call."""
+    trend = ((case.get("phases") or {}).get("dcr") or {}).get("vitals_trend") or []
+    green = (ctrl.get("vitals_tracks") or {}).get("green") or []
+    if not trend or not green or not isinstance(trend[0], dict):
+        return []
+    v0, g0 = trend[0], green[0]
+    bp = re.search(r"(\d{2,3})\s*/\s*(\d{2,3})", str(v0.get("bp") or ""))
+    diffs = []
+    for key, want, tol in (("hr", _num(v0.get("hr")), 12), ("sbp", int(bp.group(1)) if bp else None, 12),
+                           ("spo2", _num(v0.get("spo2")), 3)):
+        got = g0.get(key)
+        if want is not None and got is not None and abs(want - got) > tol:
+            diffs.append(f"{key} case {want} vs green track {got}")
+    if not diffs:
+        return []
+    return [_f("low", "consistency", "vitals_tracks.green[0]",
+               f"Green track starts away from the case's arrival vitals ({'; '.join(diffs)}).",
+               "Start the green track at the case's arrival vitals.")]
+
+
 def _num(v):
     if isinstance(v, (int, float)):
         return v
@@ -367,9 +389,9 @@ def check_structure(ctrl: Dict, case: Dict) -> List[Dict]:
 def run_rules(ctrl: Dict, case: Dict) -> List[Dict]:
     findings = []
     for check in (check_laterality, check_gcs, check_thresholds, check_meds, check_vitals, check_handover,
-                  check_trees):
+                  check_trees, check_arrival_vitals):
         try:
-            findings += check(ctrl, case) if check is check_laterality else check(ctrl)
+            findings += check(ctrl, case) if check in (check_laterality, check_arrival_vitals) else check(ctrl)
         except Exception as e:  # a broken check must never sink a package
             findings.append(_f("low", "checker", check.__name__, f"Check failed to run: {e}", "Review manually."))
     findings += check_structure(ctrl, case)

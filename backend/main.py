@@ -27,9 +27,9 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 try:
-    from backend import scenario, redteam, controller_docs, archive
+    from backend import scenario, redteam, controller_docs, archive, casemix
 except ImportError:  # running from inside backend/
-    import scenario, redteam, controller_docs, archive
+    import scenario, redteam, controller_docs, archive, casemix
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
@@ -328,7 +328,7 @@ class _Budget:
 
     def __init__(self, max_calls: int, max_usd: float):
         self.max_calls, self.max_usd = max_calls, max_usd
-        self.calls = self.tok_in = self.tok_out = 0
+        self.calls = self.tok_in = self.tok_out = self.tok_cached = 0
         self.usd = 0.0
         self.exhausted = False
         self._lock = threading.Lock()
@@ -340,15 +340,16 @@ class _Budget:
                 raise BudgetExceeded(f"exercise AI budget reached ({self.calls} calls, ${self.usd:.2f})")
             self.calls += 1
 
-    def record(self, tok_in: int, tok_out: int, usd: float):
+    def record(self, tok_in: int, tok_out: int, usd: float, tok_cached: int = 0):
         with self._lock:
             self.tok_in += tok_in
+            self.tok_cached += tok_cached
             self.tok_out += tok_out
             self.usd += usd
 
     def summary(self) -> Dict:
-        return {"calls": self.calls, "input_tokens": self.tok_in, "output_tokens": self.tok_out,
-                "est_usd": round(self.usd, 4)}
+        return {"calls": self.calls, "input_tokens": self.tok_in, "cached_tokens": self.tok_cached,
+                "output_tokens": self.tok_out, "est_usd": round(self.usd, 4)}
 
 
 _tl = threading.local()  # .budget: the _Budget of the job this thread is working for
@@ -425,9 +426,12 @@ def _call_model(prompt: str, kind: str, system: Optional[str] = None, json_mode:
     u = getattr(response, "usage_metadata", None)
     tok_in = (getattr(u, "prompt_token_count", 0) or 0) if u else 0
     tok_out = ((getattr(u, "candidates_token_count", 0) or 0) + (getattr(u, "thoughts_token_count", 0) or 0)) if u else 0
+    # Gemini caches repeated prompt prefixes automatically and bills those tokens at a discount. The estimate below
+    # deliberately ignores the discount (conservative); the count is recorded so savings are visible in the log.
+    tok_cached = (getattr(u, "cached_content_token_count", 0) or 0) if u else 0
     usd = tok_in / 1e6 * PRICE_IN_PER_M + tok_out / 1e6 * PRICE_OUT_PER_M
     if budget:
-        budget.record(tok_in, tok_out, usd)
+        budget.record(tok_in, tok_out, usd, tok_cached)
     with _spend_lock:
         today = datetime.utcnow().date()
         if _daily_spend["day"] != today:
@@ -532,6 +536,10 @@ class ExerciseConfig(BaseModel):
     selected_footprint: List[str] = Field(max_length=50)
     specialists: Dict[str, int] = Field(max_length=50)
     days: List[DayConfig] = Field(max_length=30)
+    # Who the exercise is meant to treat beyond friendly forces. None = derive from the days (Detainee Ops -> enemy
+    # combatants/EPW; Humanitarian or Stability days -> civilians). One policy drives both the MEDROE and the case mix.
+    treat_enemy_combatants: Optional[bool] = None
+    treat_civilians: Optional[bool] = None
 
 # Case data
 DNBI_BY_ENVIRONMENT = {
@@ -582,6 +590,13 @@ GENERAL_TRAUMA = [
     "Penetrating neck trauma", "GSW chest with pneumothorax", "Pelvic fracture - stable", "Burn injury 15% TBSA"
 ]
 
+# Contain a surgical word but do not call for damage-control surgery at Role 2 (eye injuries are shielded and
+# evacuated; dengue "hemorrhagic" fever is medical).
+_NOT_DCS_DESPITE_SURGICAL_WORDS = ("penetrating eye", "hemorrhagic fever")
+# Added to the surgical list: any penetrating torso/neck/face/fragment injury, junctional hemorrhage, severe burns.
+# PROVISIONAL: clinician review requested (see docs/case-mix-assumptions.md).
+_SURGICAL_KW_EXTRA = ["penetrating", "junctional", "fragment wounds", "severe burns"]
+
 def determine_case_phases(case_type: str, mechanism: str, is_mascal: bool = False) -> List[str]:
     surgical_kw = [
         "amputation", "evisceration", "vascular injury", "hemothorax", "fasciotomy",
@@ -611,7 +626,13 @@ def determine_case_phases(case_type: str, mechanism: str, is_mascal: bool = Fals
 
     case_lower = (case_type + " " + mechanism).lower()
 
-    for kw in surgical_kw:
+    # Precedence matters. The broad non-surgical words ("TBI", "blast lung") used to win, so "TBI with
+    # penetrating fragment" and "Junctional hemorrhage ... fragments" lost their surgery phase and, with it,
+    # their DCS care pathway. Now: named exceptions, then surgical terms, then the broad non-surgical words.
+    for kw in _NOT_DCS_DESPITE_SURGICAL_WORDS:
+        if kw in case_lower:
+            return ["DCR", "PCC"]
+    for kw in surgical_kw + _SURGICAL_KW_EXTRA:
         if kw.lower() in case_lower:
             return ["DCR", "DCS", "PCC"]
     for kw in non_surgical_kw:
@@ -674,7 +695,42 @@ JSON STRUCTURE:
   "debrief_questions": ["String"]
 }"""
 
-def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str, is_mascal: bool = False, mets: Optional[List[str]] = None) -> Dict:
+def _profile_prompt(profile: Optional[Dict], ctx: Optional[Dict]) -> str:
+    """Requirements assigned in code (see casemix.py) that the model must write the case around."""
+    if not profile:
+        return ""
+    ctx = ctx or {}
+    access = profile.get("evac_access", 1.0)
+    evac = ("onward evacuation to Role 3 is largely denied or badly delayed; expect prolonged casualty care at Role 2"
+            if access < 0.5 else "onward evacuation to Role 3 is contested and limited" if access < 0.8
+            else "onward evacuation to Role 3 is available")
+    return (
+        f"ASSIGNED TRIAGE: {profile['triage']}. Write an injury pattern and physiology that genuinely fit this "
+        f"category; triage_category must be exactly \"{profile['triage']}\".\n"
+        f"ASSIGNED DISPOSITION: {profile['disposition']}. The case's course must lead there; disposition must be exactly "
+        f"\"{profile['disposition']}\".\n"
+        f"PATIENT: {casemix.POPULATION_PROMPT[profile['population']]}.\n"
+        + (f"OPERATIONAL CONTEXT: {ctx['setting']}; threat level {ctx['threat']}. Make the 9-line security and marking "
+           f"lines consistent with it.\n" if ctx.get("setting") else "")
+        + f"EVACUATION: {evac}.\n"
+        + ("ARRIVAL: at night. Low-light, NVG or blackout conditions affect the LZ marking, what is found on exam and "
+           "the care that can be given.\n" if profile.get("night") else "")
+    )
+
+
+def _enforce_profile(data: Dict, profile: Optional[Dict]) -> Dict:
+    """The assignment is authoritative: set it on the case whatever the model wrote."""
+    if profile:
+        data["triage_category"] = profile["triage"]
+        data["disposition"] = profile["disposition"]
+        data["patient_population"] = profile["population"]
+        if profile.get("night"):
+            data["arrival_window"] = "night"
+    return data
+
+
+def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str, is_mascal: bool = False, mets: Optional[List[str]] = None,
+                       profile: Optional[Dict] = None, ctx: Optional[Dict] = None) -> Dict:
     phases = determine_case_phases(case_type, mechanism, is_mascal)
     phase_instr = "This case does NOT require surgery. Only DCR and PCC. Set dcs to null." if phases == ["DCR", "PCC"] else "This case requires surgery. Include DCR, DCS, and PCC."
 
@@ -691,6 +747,7 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
         f"CASE: {case_type}\n"
         f"MECHANISM: {mechanism}\n"
         + (f"{mech_context}\n" if mech_context else "")
+        + _profile_prompt(profile, ctx)
         + mets_line
         + f"{phase_instr}\n"
         f"ZAP NUMBER: Use exactly '{zap}' as the zap field — do not change it.\n"
@@ -702,7 +759,7 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
     def _enforce_zap(data: Dict) -> Dict:
         if "zmist" in data:
             data["zmist"]["zap"] = zap
-        return data
+        return _enforce_profile(data, profile)
 
     try:
         return _enforce_zap(json.loads(response.text))
@@ -794,9 +851,10 @@ def generate_medroe(config: ExerciseConfig) -> str:
     prompt = f"""Generate MEDROE (Medical Rules of Engagement) for:
 Exercise: {config.exercise_name}, Environment: {config.environment}, Threat: {config.threat_level}
 CBRN play: {has_cbrn}, Detainee Ops: {has_detainee}
+{casemix.policy_text(casemix.care_policy(config))}
 
 Include:
-- Eligibility and treatment priorities: US forces, partner forces, host-nation civilians, detainee/EPW — care rendered by clinical need per the Geneva Conventions
+- Eligibility and treatment priorities, stating the ELIGIBILITY POLICY above exactly: US forces, partner forces, host-nation civilians, detainee/EPW — care rendered by clinical need per the Geneva Conventions
 - Evacuation precedence criteria (Urgent / Priority / Routine) and who may request each
 - Role 2 holding policy (maximum holding hours before evacuation or RTD)
 - Blood product release authority, incl. walking blood bank activation criteria
@@ -1195,9 +1253,13 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
     assigned_counts = {}
     blood_used = 0  # cumulative whole-blood-equivalent units drawn, exercise-wide
 
-    def _draw(day_number: int, is_mascal: bool) -> Optional[Dict]:
+    def _draw(day_number: int, is_mascal: bool, night: bool = False) -> Optional[Dict]:
         pool = case_pools.get((day_number, is_mascal))
         if pool:
+            # Cases written for night arrival fill the night wave and the rest fill the day waves.
+            for k in range(len(pool) - 1, -1, -1):
+                if (pool[k].get("arrival_window") == "night") == night:
+                    return pool.pop(k)
             return pool.pop()
         # Defensive: never drop a scheduled slot — borrow from any non-empty pool.
         for p in case_pools.values():
@@ -1225,7 +1287,7 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
                      for w in range(base_waves)]
         if day.mascal and day.mascal_patients:
             day_waves.append({"pts": day.mascal_patients, "mascal": True})
-        night_waves = [{"pts": night_pts, "mascal": False}] if night_pts else []
+        night_waves = [{"pts": night_pts, "mascal": False, "night": True}] if night_pts else []
 
         # Day window 0700-1900 (12h); night window 2000-0200 (6h).
         for group, start_min, span_min in ((day_waves, 7 * 60, 12 * 60), (night_waves, 20 * 60, 6 * 60)):
@@ -1240,7 +1302,7 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
             time_spread = 45 if is_mascal_wave else 60
 
             for p in range(wave_pts):
-                case = _draw(day.day_number, is_mascal_wave)
+                case = _draw(day.day_number, is_mascal_wave, w.get("night", False))
                 if case is None:
                     break
 
@@ -1778,38 +1840,54 @@ Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
         name = f"Operation {name}"
     return {"name": name}
 
+class _Deck:
+    """Draw from a list without replacement: a repeat only occurs once every entry has been used, then it reshuffles."""
+    def __init__(self, items: List[str]):
+        self.items, self._pile = list(items), []
+
+    def draw(self) -> str:
+        if not self._pile:
+            self._pile = random.sample(self.items, len(self.items))
+        return self._pile.pop()
+
+
 def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
     """Return a list of (day_number, case_type, mechanism, is_trauma, is_mascal)
     tuples — one per patient. Day-tagged so scheduling can keep each case in
     the pool (day, routine/MASCAL) it was generated for."""
     tasks = []
     env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
+    decks: Dict[tuple, _Deck] = {}
+
+    def draw(pool: List[str]) -> str:
+        return decks.setdefault(tuple(pool), _Deck(pool)).draw()
     for day in config.days:
         # Routine casualty load for the day (not part of any MASCAL surge).
         routine_ratio = 0.85 if day.tactical_setting in ["Frontal Attack", "Amphibious Assault"] else 0.50
         num_trauma = int(day.total_patients * routine_ratio)
         num_dnbi = day.total_patients - num_trauma
         for _ in range(num_trauma):
-            tasks.append((day.day_number, random.choice(GENERAL_TRAUMA), day.tactical_setting, True, False))
+            tasks.append((day.day_number, draw(GENERAL_TRAUMA), day.tactical_setting, True, False))
         for _ in range(num_dnbi):
-            tasks.append((day.day_number, random.choice(env_dnbi), f"DNBI - {config.environment}", False, False))
+            tasks.append((day.day_number, draw(env_dnbi), f"DNBI - {config.environment}", False, False))
         # MASCAL surge — additive extra casualties, trauma-heavy, tagged is_mascal.
         if day.mascal and day.mascal_patients:
             inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal_etiology else GENERAL_TRAUMA
             m_trauma = int(day.mascal_patients * 0.85)
             for _ in range(m_trauma):
-                tasks.append((day.day_number, random.choice(inj_types), day.mascal_etiology or day.tactical_setting, True, True))
+                tasks.append((day.day_number, draw(inj_types), day.mascal_etiology or day.tactical_setting, True, True))
             for _ in range(day.mascal_patients - m_trauma):
-                tasks.append((day.day_number, random.choice(env_dnbi), f"DNBI - {config.environment}", False, True))
+                tasks.append((day.day_number, draw(env_dnbi), f"DNBI - {config.environment}", False, True))
     return tasks
 
-def _generate_one(task: tuple, environment: str, region: str, mets: Optional[List[str]] = None) -> Dict:
+def _generate_one(task: tuple, environment: str, region: str, mets: Optional[List[str]] = None,
+                  profile: Optional[Dict] = None, ctx: Optional[Dict] = None) -> Dict:
     _day, case_type, mech, is_trauma, is_mascal = task
     try:
-        return generate_case_sync(case_type, mech, environment, region, is_mascal, mets)
+        return generate_case_sync(case_type, mech, environment, region, is_mascal, mets, profile, ctx)
     except Exception as e:
         print(f"WARNING: case generation failed ({case_type}): {e} — using offline fallback")
-        case = create_fallback_case(case_type, mech, is_trauma)
+        case = _enforce_profile(create_fallback_case(case_type, mech, is_trauma), profile)
         # Truthy marker that also records why, so the job message can say what went wrong.
         case["_fallback"] = getattr(e, "kind", None) or ("budget" if isinstance(e, BudgetExceeded) else "other")
         return case
@@ -1964,6 +2042,11 @@ def _run_generation(config: ExerciseConfig, job_id: str):
     try:
         tasks = _build_case_tasks(config)
         total = len(tasks)
+        profiles = casemix.assign_profiles(tasks, config, lambda ct, mech, masc: "DCS" in determine_case_phases(ct, mech, masc))
+        days_by_no = {d.day_number: d for d in config.days}
+        ctxs = [{"setting": days_by_no[t[0]].tactical_setting if t[0] in days_by_no else "", "threat": config.threat_level}
+                for t in tasks]
+        print(f"Case mix for '{config.exercise_name}': {casemix.summarize(profiles)}; care policy {casemix.care_policy(config)}")
         budget = _Budget(max_calls=MAX_CALLS_PER_CASE * total, max_usd=MAX_USD_PER_EXERCISE)
         _tl.budget = budget
         _job_update(job_id, progress="Generating cases...", completed=0, total=total)
@@ -1971,7 +2054,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         cases_results: Dict[int, Dict] = {}
         with ThreadPoolExecutor(max_workers=min(5, max(total, 1))) as pool:
             futures = {pool.submit(_bound(budget, _generate_one), t, config.environment, config.region,
-                                   config.selected_mets): i
+                                   config.selected_mets, profiles[i], ctxs[i]): i
                        for i, t in enumerate(tasks)}
             completed = 0
             for future in as_completed(futures):
@@ -2053,7 +2136,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
             print(f"WARNING: {templated}/{total} controller layers shipped as the pathway template")
         usage = budget.summary()
         print(f"AI usage for '{config.exercise_name}' ({total} cases): {usage['calls']} calls, "
-              f"{usage['input_tokens']} in / {usage['output_tokens']} out tokens, est ${usage['est_usd']:.2f}")
+              f"{usage['input_tokens']} in ({usage['cached_tokens']} cached) / {usage['output_tokens']} out tokens, est ${usage['est_usd']:.2f}")
         done_msg = "Package ready!" if not fallback_count else (
             f"Package ready — NOTE: {fallback_count} of {total} cases used the offline "
             f"fallback template ({fallback_why}); review the case book before use.")
@@ -2209,6 +2292,7 @@ async def list_exercise_cases(exercise_id: int):
             "index": i, "zap": zmist.get("zap"), "title": meta.get("title"),
             "triage": c.get("triage_category"), "disposition": c.get("disposition"),
             "specialty": meta.get("target_specialty"), "duration": meta.get("estimated_duration"),
+            "population": c.get("patient_population"), "night": c.get("arrival_window") == "night",
             "mechanism": _clip(zmist.get("mechanism"), 220), "injuries": _clip(zmist.get("injuries"), 160),
         })
     return {"id": ex.id, "name": ex.name, "cases": rows}

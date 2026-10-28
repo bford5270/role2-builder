@@ -27,6 +27,8 @@ interface CaseRow {
   duration: string | null;
   mechanism: string;
   injuries: string;
+  population?: string | null;
+  night?: boolean;
 }
 
 interface CaseDetail {
@@ -90,6 +92,8 @@ const TRIAGE_STYLE: Record<string, string> = {
   T4: 'border-signal-blue text-signal-blue',
   Other: 'border-border-2 text-ink-3',
 };
+
+const POPULATION_LABEL: Record<string, string> = { civilian: 'Civilian', enemy: 'Enemy / EPW', partner: 'Partner force' };
 
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return 'N/A';
@@ -295,7 +299,8 @@ function CasePanel({ exerciseId }: { exerciseId: number }) {
               <span className="min-w-0">
                 <span className="block text-sm text-ink-1">{r.title || 'Untitled case'}</span>
                 <span className="block text-xs text-ink-3 truncate">
-                  {[r.zap && `ZAP ${r.zap}`, r.disposition, r.specialty].filter(Boolean).join(' · ')}
+                  {[r.zap && `ZAP ${r.zap}`, r.disposition, r.specialty, r.population && POPULATION_LABEL[r.population],
+                    r.night && 'Night arrival'].filter(Boolean).join(' · ')}
                 </span>
                 {openIndex !== r.index && r.mechanism && (
                   <span className="block text-xs text-ink-2 mt-0.5">{r.mechanism}</span>

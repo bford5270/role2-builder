@@ -1,0 +1,202 @@
+{
+ "derived_from": {
+  "exercises": 36,
+  "max_id": 36,
+  "date": "2026-10-28",
+  "note": "Reflects the generator's output BEFORE case-mix assignment existed."
+ },
+ "triage": {
+  "dnbi": {
+   "_pooled": {
+    "n": 398,
+    "T1": 0.49748743718592964,
+    "T2": 0.39949748743718594,
+    "T3": 0.10301507537688442,
+    "Expectant": 0.0
+   }
+  },
+  "routine": {
+   "_pooled": {
+    "n": 411,
+    "T1": 0.6861313868613139,
+    "T2": 0.30900243309002434,
+    "T3": 0.004866180048661801,
+    "Expectant": 0.0
+   },
+   "Defensive Operations": {
+    "n": 317,
+    "T1": 0.672566177117228,
+    "T2": 0.3242019171576818,
+    "T3": 0.0032319057250901413,
+    "Expectant": 0.0
+   },
+   "Frontal Attack": {
+    "n": 25,
+    "T1": 0.7822992700729927,
+    "T2": 0.2158759124087591,
+    "T3": 0.0018248175182481753,
+    "Expectant": 0.0
+   },
+   "Stability Operations": {
+    "n": 21,
+    "T1": 0.6469991889699919,
+    "T2": 0.32319545823195456,
+    "T3": 0.029805352798053526,
+    "Expectant": 0.0
+   },
+   "Convoy Operations": {
+    "n": 36,
+    "T1": 0.7704308000572492,
+    "T2": 0.2281379705166738,
+    "T3": 0.0014312294260770003,
+    "Expectant": 0.0
+   },
+   "Retrograde Operations": {
+    "n": 12,
+    "T1": 0.6034063260340632,
+    "T2": 0.39389024060556904,
+    "T3": 0.0027034333603676674,
+    "Expectant": 0.0
+   }
+  },
+  "mascal": {
+   "_pooled": {
+    "n": 96,
+    "T1": 0.9583333333333334,
+    "T2": 0.041666666666666664,
+    "T3": 0.0,
+    "Expectant": 0.0
+   },
+   "Indirect Fire/Mortar": {
+    "n": 9,
+    "T1": 0.9322916666666666,
+    "T2": 0.06770833333333333,
+    "T3": 0.0,
+    "Expectant": 0.0
+   },
+   "IED/Blast": {
+    "n": 36,
+    "T1": 0.9485294117647058,
+    "T2": 0.051470588235294115,
+    "T3": 0.0,
+    "Expectant": 0.0
+   },
+   "UAS/Drone Strike": {
+    "n": 25,
+    "T1": 0.984375,
+    "T2": 0.015625,
+    "T3": 0.0,
+    "Expectant": 0.0
+   },
+   "GSW/Small Arms": {
+    "n": 26,
+    "T1": 0.9603658536585366,
+    "T2": 0.039634146341463415,
+    "T3": 0.0,
+    "Expectant": 0.0
+   }
+  }
+ },
+ "disposition": {
+  "trauma": {
+   "_pooled": {
+    "n": 507,
+    "RTD": 0.0,
+    "Evac to Role 3": 0.9960552268244576,
+    "Hold at Role 2": 0.0039447731755424065,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "T1": {
+    "n": 374,
+    "RTD": 0.0,
+    "Evac to Role 3": 0.9998478879238223,
+    "Hold at Role 2": 0.00015211207617772776,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "T2": {
+    "n": 131,
+    "RTD": 0.0,
+    "Evac to Role 3": 0.9927454000162114,
+    "Hold at Role 2": 0.007254599983788604,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "T3": {
+    "n": 2,
+    "RTD": 0.0,
+    "Evac to Role 3": 0.9376957883745214,
+    "Hold at Role 2": 0.0623042116254786,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "Expectant": {
+    "n": 0,
+    "RTD": 0.0,
+    "Evac to Role 3": 0.9960552268244576,
+    "Hold at Role 2": 0.0039447731755424065,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   }
+  },
+  "dnbi": {
+   "_pooled": {
+    "n": 398,
+    "RTD": 0.03768844221105527,
+    "Evac to Role 3": 0.8341708542713567,
+    "Hold at Role 2": 0.12814070351758794,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "T1": {
+    "n": 198,
+    "RTD": 0.0026541156486658644,
+    "Evac to Role 3": 0.9789322197843678,
+    "Hold at Role 2": 0.018413664566966286,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "T2": {
+    "n": 159,
+    "RTD": 0.02623750938601051,
+    "Evac to Role 3": 0.7443250736440825,
+    "Hold at Role 2": 0.229437416969907,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "T3": {
+    "n": 41,
+    "RTD": 0.20652368987796124,
+    "Evac to Role 3": 0.5627243359655419,
+    "Hold at Role 2": 0.23075197415649676,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   },
+   "Expectant": {
+    "n": 0,
+    "RTD": 0.03768844221105527,
+    "Evac to Role 3": 0.8341708542713567,
+    "Hold at Role 2": 0.12814070351758794,
+    "Died of Wounds": 0.0,
+    "Expectant": 0.0
+   }
+  }
+ },
+ "population": {
+  "other": {
+   "n": 867,
+   "us": 0.7416378316032295,
+   "partner": 0.1384083044982699,
+   "civilian": 0.11880046136101499,
+   "enemy": 0.0011534025374855825
+  },
+  "humanitarian": {
+   "n": 40,
+   "us": 0.575,
+   "partner": 0.15,
+   "civilian": 0.275,
+   "enemy": 0.0
+  }
+ }
+}

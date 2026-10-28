@@ -89,7 +89,8 @@ def test_disabled_without_bucket(monkeypatch):
 CASES = [
     {"meta": {"title": "Blast Injury", "target_specialty": "Trauma", "estimated_duration": "4-6 hours"},
      "zmist": {"zap": "11111", "mechanism": "M" * 400, "injuries": "TM rupture"},
-     "triage_category": "T2 Delayed", "disposition": "Evac to Role 3", "controller": {"big": "x" * 5000}},
+     "triage_category": "T2 Delayed", "disposition": "Evac to Role 3", "controller": {"big": "x" * 5000},
+     "patient_population": "civilian", "arrival_window": "night"},
     {"meta": {"title": "Second"}, "zmist": {"zap": "22222"}, "triage_category": "T1 Immediate"},
     "not-a-dict",
 ]
@@ -113,6 +114,8 @@ def test_case_list_is_compact_and_tolerates_text_or_json(monkeypatch):
         first = body["cases"][0]
         assert first["zap"] == "11111" and first["title"] == "Blast Injury" and first["triage"] == "T2 Delayed"
         assert len(first["mechanism"]) <= 220 and "controller" not in first
+        assert first["population"] == "civilian" and first["night"] is True
+        assert body["cases"][1]["population"] is None and body["cases"][1]["night"] is False
         assert body["cases"][2]["title"] is None  # malformed entry doesn't break the list
 
 

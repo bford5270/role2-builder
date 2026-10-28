@@ -267,7 +267,8 @@ RULES
   performs the critical actions. "red" runs 0 to 20-30 min: the course if a critical action is missed, and
   must worsen physiologically (e.g., HR rises, then falls toward arrest; BP falls; SpO2 falls; AVPU drops).
   t=0 is identical in both tracks. Handover vitals at the focus leg should match green t=0; explain any
-  difference in the handover summary.
+  difference in the handover summary. The case book prints CASE.arrival_vitals as the patient's arrival
+  vitals, so green t=0 must start there (HR, BP, RR, SpO2, GCS) and the track must develop from them.
 - Each critical action gives the window in minutes before the red track starts, and how to rejoin green.
 - Meds on the turnover card use realistic TCCC/JTS doses (TXA 2 g IV; calcium per CPG) with minutes-prior.
 - Only include a burns block when the injuries involve burns.
@@ -330,7 +331,12 @@ VITALS = {"t": 0, "hr": 0, "sbp": 0, "dbp": 0, "rr": 0, "spo2": 0, "temp_f": 97.
 
 def _case_brief(case: Dict) -> Dict:
     phases = case.get("phases") or {}
+    trend = (phases.get("dcr") or {}).get("vitals_trend") or []
+    arrival = {k: trend[0].get(k) for k in ("hr", "bp", "rr", "spo2", "gcs")} if trend and isinstance(trend[0], dict) else None
     return {
+        "arrival_vitals": arrival,
+        "population": case.get("patient_population"),
+        "night_arrival": case.get("arrival_window") == "night",
         "title": (case.get("meta") or {}).get("title"),
         "zmist": case.get("zmist"),
         "triage": case.get("triage_category"),
