@@ -31,7 +31,7 @@ def _s3():
     global _client
     if _client is None:
         import boto3  # imported lazily so DB-only deployments and tests don't need it
-        _client = boto3.client("s3")
+        _client = boto3.client("s3", region_name=os.getenv("EXERCISE_BUCKET_REGION", "us-east-1"))
     return _client
 
 
