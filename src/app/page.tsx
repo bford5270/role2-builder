@@ -15,6 +15,7 @@ export default function SetupPage() {
   const [environment, setEnvironment] = useState("Urban");
   const [threatLevel, setThreatLevel] = useState("Peer/Near-Peer");
   const [region, setRegion] = useState("Indo-Pacific");
+  const [highAcuity, setHighAcuity] = useState(false);
 
   // MET selection
   const [selectedMETs, setSelectedMETs] = useState<string[]>([]);
@@ -337,6 +338,7 @@ export default function SetupPage() {
       selected_mets: selectedMETs,
       selected_footprint: selectedFootprint,
       specialists,
+      casualty_acuity: highAcuity ? 'high' : 'realistic',
     };
     localStorage.setItem('exerciseConfig', JSON.stringify(config));
     window.location.href = '/tactical';
@@ -572,6 +574,53 @@ export default function SetupPage() {
               ))}
             </select>
           </div>
+        </div>
+
+        {/* Casualty acuity */}
+        <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-md)', padding: 12, marginTop: 16 }}>
+          <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 10 }}>
+            <input
+              type="checkbox"
+              checked={highAcuity}
+              onChange={(e) => setHighAcuity(e.target.checked)}
+              aria-label="High-acuity casualties"
+              style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+            />
+            <div
+              style={{
+                width: 40,
+                height: 20,
+                borderRadius: 10,
+                background: highAcuity ? 'var(--signal-amber)' : 'var(--surface-3)',
+                position: 'relative',
+                transition: 'background 0.2s',
+                flexShrink: 0,
+              }}
+            >
+              <div
+                style={{
+                  width: 16,
+                  height: 16,
+                  borderRadius: '50%',
+                  background: 'var(--ink-1)',
+                  position: 'absolute',
+                  top: 2,
+                  left: highAcuity ? 22 : 2,
+                  transition: 'left 0.2s',
+                }}
+              />
+            </div>
+            <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, fontWeight: 600, color: 'var(--ink-2)' }}>
+              High-acuity casualties
+            </span>
+          </label>
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)', marginTop: 8, marginBottom: 0, lineHeight: 1.5 }}>
+            <strong>Off (default):</strong> casualty severity follows published Role 2 data (Kotwal et al. 2018). Most casualties
+            are mild or moderate and roughly 1 in 5 is critical or severe, so expect fewer T1 cases and more return-to-duty.{' '}
+            <strong>On:</strong> about two to three times as many critical and severe casualties, for surgical and resuscitation
+            training. This changes the severity mix only, not how many patients arrive. Threat level, tactical settings and
+            mass-casualty events still shift the mix on top of it.
+          </p>
         </div>
       </section>
 

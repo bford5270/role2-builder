@@ -2,7 +2,10 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**.md"]
+    # Only what goes into the backend bundle (buildspec artifact: Dockerfile, requirements.txt, backend/) starts the
+    # pipeline. A frontend, docs or test change redeploys an identical backend, costs pipeline minutes and briefly
+    # takes the single-instance API down for nothing. The frontend deploys through Vercel.
+    paths: ["backend/**", "Dockerfile", "requirements.txt", "buildspec.yml"]
 permissions:
   id-token: write
   contents: read

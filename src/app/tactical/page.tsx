@@ -27,6 +27,7 @@ interface ExerciseConfig {
   selected_footprint: string[];
   specialists: Record<string, number>;
   days: DayConfig[];
+  casualty_acuity?: 'realistic' | 'high';
 }
 
 const TACTICAL_SETTINGS = [
@@ -241,7 +242,7 @@ export default function TacticalScenarioPage() {
               {config.exercise_name}
             </h1>
             <p style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)', marginTop: 4 }}>
-              {config.duration} Days &nbsp;|&nbsp; {config.environment} &nbsp;|&nbsp; {config.region} &nbsp;|&nbsp; {config.threat_level}
+              {config.duration} Days &nbsp;|&nbsp; {config.environment} &nbsp;|&nbsp; {config.region} &nbsp;|&nbsp; {config.threat_level}{config.casualty_acuity === 'high' ? <> &nbsp;|&nbsp; High-acuity casualties</> : null}
             </p>
           </div>
           <a href="/" style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-3)', textDecoration: 'none' }}>
