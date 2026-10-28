@@ -1,81 +1,103 @@
-# Case-mix assumptions (for clinician review)
+# Case mix: how it is built, and where each number comes from
 
-Each casualty's triage, outcome, patient population and night arrival are assigned **in code** from the
-scenario the user selects, then handed to the case prompt as requirements ([backend/casemix.py](../backend/casemix.py)).
-The model writes the case around them; the code overrides the fields afterwards so they always hold.
+For clinician review. Code: [backend/casemix.py](../backend/casemix.py). Tests: [tests/test_casemix.py](../tests/test_casemix.py).
 
-Every exercise draws its own mix: each baseline weight varies by a random ±15% (relative), and counts are
-allocated per group so totals track the targets. Two exercises with the same settings will differ slightly.
+## How it works (bounded by the scenario, different every exercise)
 
-## What is data and what is assumption
+1. **Envelopes.** Every tunable number is a `(min, mode, max)` range. The scenario the user selects (threat level, tactical
+   settings, MASCAL etiologies, Humanitarian days, evacuation access) widens or shifts each range. The scenario therefore
+   *bounds* what any exercise can look like.
+2. **Draw.** At the start of each exercise one value is drawn per parameter from its envelope (triangular distribution) from a
+   fresh random seed. Same settings, different draw: no two exercises are the same, and none can fall outside the envelope.
+3. **Assign.** Severity is assigned to every casualty slot **first** (critical / severe / moderate / mild). The case type is then
+   picked from a pool of that severity (without repeats until the pool is used up), and triage, outcome, patient population and
+   night arrival follow from the drawn values.
+4. **Record.** The draw (seed, envelopes, values, sources) is saved with the exercise as `config.case_mix`. The same draw reproduces
+   the same exercise. The model writes each case around its assignment; the code overrides triage and disposition afterwards.
 
-| Piece | Source |
+`casualty_acuity: "high"` (default `"realistic"`) is a training-emphasis switch that scales the serious-casualty share up 2 to 3 times,
+still inside bounds.
+
+## What the literature supports
+
+| Source | What we take from it |
 |---|---|
-| Triage mix per group (DNBI / routine trauma by tactical setting / MASCAL by etiology) | **Archive**: 36 exercises, 1,536 cases (`backend/casemix_data.json`, rebuilt by `scripts/derive_case_mix.py`) |
-| Disposition mix given triage | **Archive** |
-| Share of civilian and partner-force patients (12% / 14%; 28% civilian on Humanitarian and Stability days) | **Archive** |
-| Surgical vs non-surgical triage multipliers (`TIER_MULT`) | **Provisional** |
-| Floors for Expectant, Died of Wounds, RTD, Hold (`TRIAGE_FLOOR`, `DISPOSITION_FLOOR`) | **Provisional** |
-| Evacuation-access factors and how steeply Role 3 evacuation falls (`_SETTING_ACCESS`, `ACCESS_EXPONENT = 1.5`) | **Provisional** (threat scale mirrors the app's existing `_threat_evac_mult`) |
-| Enemy-combatant/EPW share (12% of a Detainee Ops day, 8% otherwise) | **Provisional** (the archive has essentially none) |
+| [Kotwal et al. 2018](https://pubmed.ncbi.nlm.nih.gov/29851907/), *J Trauma Acute Care Surg* (9,557 battle-injured casualties at US Role 2 surgical teams in Afghanistan, 2008-2014) | Mortality at Role 2 by severity: **40.0% critical, 11.2% severe, 0.8% moderate, <0.1% mild**; 95.1% survived to transfer. Severity mix (my arithmetic from the abstract's percentages, approximate): **~8% critical, ~11% severe, ~24% moderate, ~55% mild**. Affiliation: US coalition 37.4%, Afghan forces 37.3%, civilian/other 21.3%, non-US coalition 4.0%. |
+| [Kotwal et al. 2016](https://jamanetwork.com/journals/jamasurgery/fullarticle/2446845), *JAMA Surg* (golden-hour policy, 21,089 casualties) | Median transport fell 90 to 43 min; killed in action fell 16.0% to 9.9%. Died-of-wounds was essentially unchanged. **It does not quantify what happens when onward evacuation is denied.** |
+| [Emergency War Surgery, triage chapter](https://doctorlib.org/surgery/emergency/3.html) | 10-20% of casualties reaching a surgical unit are emergent. (A secondary source cites roughly 10% immediate, 30% delayed, 50% minimal, under 10% expectant; I did not verify it against the primary text.) |
+| [Frykberg 2005](https://journals.sagepub.com/doi/pdf/10.1177/145749690509400405) | 10-25% of blast casualties have life-threatening injuries. Directional only. |
+| LSCO doctrine and analysis ([NDU Press](https://ndupress.ndu.edu/Media/News/News-Article-View/Article/4367958/whats-old-is-new-lsco-casualty-evacuation-in-the-21st-century/), [BMJ Mil Health](https://militaryhealth.bmj.com/node/155889)) | Evacuation to surgery took an estimated 72-84 hours in WWII island campaigns; Role 2 and prolonged-care holding is planned for up to 72 hours; timelines under contested conditions are "conditional rather than guaranteed". **Directional: no outcome numbers.** |
 
-**Caveat that matters:** the archive was produced by the *old* generator, which was T1-heavy (66% T1, 94% "Evac to
-Role 3") and never produced Expectant or Died of Wounds. Using it as the baseline reproduces that skew; the
-conditioning (scenario, acuity, evacuation access, floors) is what changes the picture. If the baseline itself should
-be more realistic, it needs target numbers from a clinician. Re-deriving from newer archives will feed the generator its own
-output, so `derive_case_mix.py` takes `--max-id` to pin it to exercises made before the case mix existed.
+**Not found in the published sources I could reach:** expectant percentages, return-to-duty rates, enemy-combatant/EPW shares,
+DNBI mortality, and mortality when evacuation is denied. Those parameters are bounded widely and marked **provisional** below.
+Note that for the sourced parameters only the *mode* comes from the paper; the `min`/`max` are my assumed spread around it.
 
-## Evacuation access
+**Consequence worth knowing:** the old generator's cases were about 66% T1 and never produced Expectant or Died of Wounds. The
+literature says most Role 2 casualties are mild or moderate, so the realistic default now produces far fewer critical cases
+(roughly 10-15% T1). Use `casualty_acuity: "high"` for a training emphasis.
 
-Large-scale combat means little evacuation to Role 3; a permissive setting means a lot. Access is derived from the same
-threat scale that already lengthens transit times and denies the MEDEVAC corridor in the FRAGOs:
+## Parameter registry (min / mode / max, before scenario adjustment)
 
-| Threat | Access | | Tactical setting | Factor |
+| Parameter | Min | Mode | Max | Source |
 |---|---|---|---|---|
-| Peer / Near-Peer | 0.33 | | Retrograde | 0.80 |
-| Hybrid | 0.50 | | Frontal Attack, Amphibious | 0.85 |
-| Irregular | 0.67 | | Defensive | 0.90 |
-| HADR / Permissive | 1.00 | | Convoy | 0.95 |
-| (Maritime environment ×0.90) | | | Stability / Humanitarian | 1.10 / 1.20 |
+| `serious_share.routine` (critical + severe, routine trauma) | 0.14 | 0.194 | 0.25 | Kotwal 2018 |
+| `serious_share.mascal` | 0.2 | 0.3 | 0.45 | **provisional** |
+| `serious_share.dnbi` | 0.03 | 0.08 | 0.15 | **provisional** |
+| `critical_fraction` (critical of serious) | 0.3 | 0.42 | 0.55 | Kotwal 2018 |
+| `moderate_of_rest` (moderate of non-serious) | 0.25 | 0.3 | 0.38 | Kotwal 2018 |
+| `mortality.critical` | 0.3 | 0.4 | 0.5 | Kotwal 2018 |
+| `mortality.severe` | 0.08 | 0.112 | 0.15 | Kotwal 2018 |
+| `mortality.moderate` | 0.004 | 0.008 | 0.015 | Kotwal 2018 |
+| `mortality.mild` | 0 | 0.0005 | 0.001 | Kotwal 2018 |
+| `delay_mortality_slope` (extra mortality as evacuation access falls) | 0 | 0.9 | 1.8 | **provisional** |
+| `expectant_given_critical` | 0 | 0.05 | 0.12 | **provisional** |
+| `evac_base` (share evacuated when fully permissive) | 0.8 | 0.9 | 0.97 | **provisional** |
+| `evac_exponent` (how steeply evacuation falls with access) | 1 | 1.5 | 2.2 | **provisional** |
+| `rtd_mild` | 0.5 | 0.7 | 0.9 | **provisional** |
+| `rtd_moderate` | 0.1 | 0.25 | 0.4 | **provisional** |
+| `civilian_share` (when authorized) | 0.12 | 0.213 | 0.3 | Kotwal 2018 |
+| `partner_share` | 0.08 | 0.2 | 0.41 | **provisional** (ceiling from Kotwal 2018) |
+| `enemy_share_detainee_day` (of a Detainee Ops day) | 0.06 | 0.12 | 0.2 | **provisional** |
+| `enemy_share_other` | 0.04 | 0.08 | 0.12 | **provisional** |
 
-The share evacuated is scaled by `access^1.5`. What is not evacuated is held at Role 2 for prolonged care; for T1 casualties
-20% of it becomes Died of Wounds. Low access also raises the Expectant floor (up to ×2). Permissive access moves
-some held casualties to evacuation. Result (average of 200 simulated exercises each):
+Also provisional and fixed: severity-to-triage mapping (severe is 70% T1 / 30% T2; moderate 85% T2 / 15% T3; mild 90% T3 / 10% T2);
+expectant casualties are recorded as Died of Wounds 30% of the time.
 
-| Scenario | Evac to Role 3 | Held at Role 2 | Died of wounds |
-|---|---|---|---|
-| Peer threat, Frontal / Retrograde / Defensive | ~15% | ~69% | ~10% |
-| Hybrid, Convoy / Defensive | ~29% | ~58% | ~7% |
-| HADR/Permissive, Humanitarian / Stability | ~86% | ~10% | ~1% |
+## How the scenario bounds the envelopes
 
-## Care policy (MEDROE and case mix agree)
+| Condition | Effect |
+|---|---|
+| Peer/Near-Peer threat | routine serious share max x1.30; expectant-given-critical max x2.0 |
+| Hybrid threat | routine serious share max x1.15; expectant-given-critical max x2.0 |
+| Humanitarian or Stability day present | routine serious share x0.70-0.90; civilian share max x1.4 |
+| Blast-family MASCAL (IED, VBIED, UAS, indirect fire) | MASCAL serious share max x1.20 (otherwise min x0.90) |
+| `casualty_acuity: "high"` | all serious shares x2.0-3.0 |
+| Evacuation access (per day, from threat level and setting) | scales the evacuated share and extra mortality; permissive 1.0-1.2, large-scale combat about 0.3 |
 
-One policy decides who the exercise is meant to treat; it is written into the MEDROE prompt **and** used to assign patients.
+Evacuation access reuses the app's existing threat scale (Peer 0.33, Hybrid 0.50, Irregular 0.67, permissive 1.0) times the setting
+(Retrograde 0.80, Frontal Attack and Amphibious 0.85, Defensive 0.90, Convoy 0.95, Stability 1.10, Humanitarian 1.20; Maritime x0.90),
+so the case mix and the FRAGOs agree about how contested the corridor is.
 
-- **Enemy combatants / EPW**: on when any day has Detainee Ops (or `treat_enemy_combatants: true`).
-- **Host-nation civilians**: on when any day is Humanitarian Assistance or Stability Operations (or `treat_civilians: true`).
-- Authorized: "some" (about 28% civilians on Humanitarian/Stability days, 12% otherwise; about 12% enemy/EPW on Detainee Ops days, at least one per such day).
-- Not authorized: only **one or two** across the whole exercise (an emergency-stabilization walk-in), none in exercises under 4 patients.
-- Partner forces: always authorized, about 14%.
-- Night Ops: the same 35% share the scheduler puts in its night wave; those cases are written for night arrival and fill the night wave.
+## Care policy (the MEDROE and the case mix agree)
 
-## Surgical classification change (please review)
+One policy is written into the MEDROE prompt **and** drives the patient mix.
 
-Surgery (DCS phase) was decided by a keyword list where broad non-surgical words ("TBI") won over surgical injuries.
-Added surgical terms: `penetrating`, `junctional`, `fragment wounds`, `severe burns`. Named exceptions that stay non-surgical:
-penetrating eye injury, hemorrhagic fever. Nine case types changed to surgical:
+- **Enemy combatants / EPW**: on when any day has Detainee Ops, or `treat_enemy_combatants: true`.
+- **Host-nation civilians**: on when any day is Humanitarian Assistance or Stability Operations, or `treat_civilians: true`.
+- Authorized means "some" (about 21% civilians, more on humanitarian days; about 12% of a Detainee Ops day as enemy/EPW, at least one).
+- Not authorized means **one or two** across the whole exercise (an emergency-stabilization walk-in), and none in exercises under 4 patients.
+- Night Ops: the same 35% share the scheduler puts in its night wave; those cases are written for night arrival and fill that wave.
 
-- Blast TBI with penetrating facial fragments
-- Extremity fragment wounds with prolonged tourniquet time and wound contamination
-- Junctional hemorrhage from drone-dropped munition fragments
-- Multiple penetrating fragment wounds
-- Multiple small deep fragment wounds to head/neck and posterior torso
-- Penetrating neck trauma
-- Severe burns with TBI
-- Severe burns with blast injury
-- TBI with penetrating fragment
+## Needs clinician review
 
-## Changing it
+- Every row marked **provisional** above, and the severity-to-triage mapping.
+- The new **moderate and mild case types** (`GENERAL_TRAUMA_TIERS`, `TRAUMA_TIERS`, DNBI tiering) in `backend/main.py`.
+- The surgical classification change. Added surgical terms: `penetrating`, `junctional`, `fragment wounds`, `severe burns`; exceptions that stay
+  non-surgical: penetrating eye injury, hemorrhagic fever. Nine case types changed to surgical (penetrating neck trauma, junctional
+  hemorrhage from fragments, severe burns with TBI or blast injury, TBI with penetrating fragment, multiple or deep fragment wounds, and others).
+  An assigned mild or moderate casualty never gets a surgery phase.
 
-Edit the constants at the top of `backend/casemix.py`, or rebuild the baseline with
-`python scripts/derive_case_mix.py exercises.json --max-id 36`. Run `pytest tests/test_casemix.py` afterwards.
+## Comparison data
+
+`docs/archive_case_mix_baseline.json` holds the rates measured from the 36 archived exercises produced by the *old* generator
+(`scripts/derive_case_mix.py`). It is for comparison only and is not used at runtime.

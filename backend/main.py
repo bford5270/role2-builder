@@ -540,6 +540,8 @@ class ExerciseConfig(BaseModel):
     # combatants/EPW; Humanitarian or Stability days -> civilians). One policy drives both the MEDROE and the case mix.
     treat_enemy_combatants: Optional[bool] = None
     treat_civilians: Optional[bool] = None
+    # "realistic" follows published Role 2 casualty severity; "high" is a training emphasis with 2-3x the critical/severe share.
+    casualty_acuity: str = Field(default="realistic", pattern="^(realistic|high)$")
 
 # Case data
 DNBI_BY_ENVIRONMENT = {
@@ -590,6 +592,57 @@ GENERAL_TRAUMA = [
     "Penetrating neck trauma", "GSW chest with pneumothorax", "Pelvic fracture - stable", "Burn injury 15% TBSA"
 ]
 
+# Severity-tiered case pools. "serious" is for critical and severe casualties (the original lists); "moderate" and "mild"
+# were added so the mix can follow the literature, where most Role 2 casualties are mild or moderate. The moderate and
+# mild entries are PROVISIONAL and need clinician review (docs/case-mix-assumptions.md).
+GENERAL_TRAUMA_TIERS = {
+    "serious": ["GSW right thigh with femoral artery injury", "Penetrating abdominal trauma", "Penetrating neck trauma",
+                "GSW chest with pneumothorax", "Traumatic lower-extremity amputation"],
+    "moderate": ["Blunt chest trauma with rib fractures", "Open tibia-fibula fracture", "Traumatic brain injury - moderate",
+                 "Pelvic fracture - stable", "Burn injury 15% TBSA", "GSW to the extremity without vascular injury",
+                 "Closed femur fracture", "Facial fractures with a patent airway"],
+    "mild": ["Blast injury with TM rupture", "Concussion, mild TBI", "Laceration requiring repair", "Closed ankle fracture",
+             "Contusions and abrasions", "Minor burns under 5% TBSA", "Eye foreign body", "Hand crush injury without fracture"],
+}
+_ETIOLOGY_LESS_SEVERE = {
+    "IED/Blast": (["Blast TBI, moderate, with TM rupture", "Fragment wounds to the extremities without vascular injury",
+                   "Closed lower-extremity fracture from the blast wave"],
+                  ["Concussion with tinnitus", "Superficial fragment wounds to the arms and face", "Acoustic trauma with bilateral TM perforation"]),
+    "Vehicle Rollover": (["Closed femur fracture", "Rib fractures with pulmonary contusion", "Clavicle and scapular fractures"],
+                         ["Cervical strain", "Contusions and abrasions", "Minor head laceration"]),
+    "GSW/Small Arms": (["GSW to the extremity without vascular injury", "GSW to the flank, hemodynamically stable", "Through-and-through GSW to the shoulder"],
+                       ["Graze wound to the arm", "Superficial fragment wound to the leg", "Minor ricochet wound"]),
+    "Aviation Mishap": (["Lumbar compression fracture", "Multiple stable closed fractures", "Traumatic brain injury - moderate"],
+                        ["Back strain", "Contusions and abrasions", "Minor lacerations"]),
+    "Indirect Fire/Mortar": (["Fragment wounds to the extremities", "Blast TBI, moderate", "Small pneumothorax from a fragment"],
+                             ["Superficial fragment wounds", "Concussion", "Acoustic trauma"]),
+    "Structural Collapse": (["Crush injury to the leg without compartment syndrome", "Stable pelvic ring fracture", "Multiple rib fractures"],
+                            ["Dust and eye irritation", "Contusions and abrasions", "Ankle injury"]),
+    "Burns/Fire": (["Partial-thickness burns 10-20% TBSA", "Facial burns with a patent airway", "Hand burns"],
+                   ["Minor burns under 5% TBSA", "Smoke exposure, asymptomatic", "Blistering of the forearm"]),
+    "Drowning (Amphibious)": (["Near-drowning with aspiration, responsive to oxygen", "Moderate hypothermia", "Marine laceration at risk of infection"],
+                              ["Mild hypothermia", "Coral cuts", "Swallowed-water episode, asymptomatic"]),
+    "VBIED": (["Blast TBI with TM rupture", "Fragment wounds to the extremities", "Closed fractures from the blast wave"],
+              ["Concussion", "Superficial glass lacerations", "Acoustic trauma"]),
+    "UAS/Drone Strike": (["Small fragment wounds to the extremities without vascular injury", "Blast TBI, moderate", "Extremity wounds with a tourniquet already applied"],
+                         ["Superficial fragment wounds", "Acoustic trauma", "Concussion"]),
+}
+TRAUMA_TIERS = {e: {"serious": TRAUMA_BY_ETIOLOGY[e], "moderate": mod, "mild": mild}
+                for e, (mod, mild) in _ETIOLOGY_LESS_SEVERE.items() if e in TRAUMA_BY_ETIOLOGY}
+
+_DNBI_SERIOUS_KW = ("hemorrhagic", "heat stroke", "hape", "hace", "hypothermia", "near-drowning", "decompression", "crush",
+                    "smoke", "co poisoning", "rhabdo", "appendicitis", "frostbite", "envenomation", "leptospirosis",
+                    "fall with fractures", "aspiration")
+_DNBI_MILD_KW = ("exhaustion", "dental", "stress", "sprain", "msk", "urticaria", "coral", "gastroenteritis",
+                 "mountain sickness", "sand fly", "trench foot")
+
+def dnbi_tier(case_type: str) -> str:
+    """serious / moderate / mild for a DNBI condition, from its name (provisional)."""
+    t = case_type.lower()
+    if any(k in t for k in _DNBI_SERIOUS_KW):
+        return "serious"
+    return "mild" if any(k in t for k in _DNBI_MILD_KW) else "moderate"
+
 # Contain a surgical word but do not call for damage-control surgery at Role 2 (eye injuries are shielded and
 # evacuated; dengue "hemorrhagic" fever is medical).
 _NOT_DCS_DESPITE_SURGICAL_WORDS = ("penetrating eye", "hemorrhagic fever")
@@ -597,7 +650,9 @@ _NOT_DCS_DESPITE_SURGICAL_WORDS = ("penetrating eye", "hemorrhagic fever")
 # PROVISIONAL: clinician review requested (see docs/case-mix-assumptions.md).
 _SURGICAL_KW_EXTRA = ["penetrating", "junctional", "fragment wounds", "severe burns"]
 
-def determine_case_phases(case_type: str, mechanism: str, is_mascal: bool = False) -> List[str]:
+def determine_case_phases(case_type: str, mechanism: str, is_mascal: bool = False, severity: Optional[str] = None) -> List[str]:
+    if severity in ("mild", "moderate"):
+        return ["DCR", "PCC"]  # an assigned mild or moderate casualty never needs damage-control surgery
     surgical_kw = [
         "amputation", "evisceration", "vascular injury", "hemothorax", "fasciotomy",
         "thoracotomy", "GSW abdomen", "penetrating chest", "penetrating abdominal",
@@ -705,6 +760,7 @@ def _profile_prompt(profile: Optional[Dict], ctx: Optional[Dict]) -> str:
             if access < 0.5 else "onward evacuation to Role 3 is contested and limited" if access < 0.8
             else "onward evacuation to Role 3 is available")
     return (
+        f"ASSIGNED SEVERITY: {casemix.SEVERITY_PROMPT[profile['severity']]}.\n"
         f"ASSIGNED TRIAGE: {profile['triage']}. Write an injury pattern and physiology that genuinely fit this "
         f"category; triage_category must be exactly \"{profile['triage']}\".\n"
         f"ASSIGNED DISPOSITION: {profile['disposition']}. The case's course must lead there; disposition must be exactly "
@@ -724,6 +780,7 @@ def _enforce_profile(data: Dict, profile: Optional[Dict]) -> Dict:
         data["triage_category"] = profile["triage"]
         data["disposition"] = profile["disposition"]
         data["patient_population"] = profile["population"]
+        data["severity"] = profile["severity"]
         if profile.get("night"):
             data["arrival_window"] = "night"
     return data
@@ -731,8 +788,12 @@ def _enforce_profile(data: Dict, profile: Optional[Dict]) -> Dict:
 
 def generate_case_sync(case_type: str, mechanism: str, environment: str, region: str, is_mascal: bool = False, mets: Optional[List[str]] = None,
                        profile: Optional[Dict] = None, ctx: Optional[Dict] = None) -> Dict:
-    phases = determine_case_phases(case_type, mechanism, is_mascal)
+    severity = (profile or {}).get("severity")
+    phases = determine_case_phases(case_type, mechanism, is_mascal, severity)
     phase_instr = "This case does NOT require surgery. Only DCR and PCC. Set dcs to null." if phases == ["DCR", "PCC"] else "This case requires surgery. Include DCR, DCS, and PCC."
+    if severity in ("mild", "moderate"):
+        phase_instr += (f" This is a {severity} injury: keep the DCR phase to initial assessment and treatment (no "
+                        f"resuscitation is needed) and keep PCC brief.")
 
     zap = _new_zap()
 
@@ -1842,47 +1903,54 @@ Return ONLY the operation name. Nothing else. Seed: {random.random()}"""
 
 class _Deck:
     """Draw from a list without replacement: a repeat only occurs once every entry has been used, then it reshuffles."""
-    def __init__(self, items: List[str]):
-        self.items, self._pile = list(items), []
+    def __init__(self, items: List[str], rng: Optional[random.Random] = None):
+        self.items, self._pile, self._rng = list(items), [], rng or random
 
     def draw(self) -> str:
         if not self._pile:
-            self._pile = random.sample(self.items, len(self.items))
+            self._pile = self._rng.sample(self.items, len(self.items))
         return self._pile.pop()
 
 
-def _build_case_tasks(config: ExerciseConfig) -> List[tuple]:
-    """Return a list of (day_number, case_type, mechanism, is_trauma, is_mascal)
-    tuples — one per patient. Day-tagged so scheduling can keep each case in
-    the pool (day, routine/MASCAL) it was generated for."""
-    tasks = []
-    env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
-    decks: Dict[tuple, _Deck] = {}
+def _build_case_tasks(config: ExerciseConfig, draw: Optional[Dict] = None) -> List[tuple]:
+    """Return one (day_number, case_type, mechanism, is_trauma, is_mascal, severity) tuple per patient.
 
-    def draw(pool: List[str]) -> str:
-        return decks.setdefault(tuple(pool), _Deck(pool)).draw()
+    Severity is assigned first, from the exercise's drawn case-mix parameters (casemix.py), and the case type is then
+    picked from a pool of that severity. Day-tagged so scheduling can keep each case in the pool (day, routine/MASCAL)
+    it was generated for."""
+    draw = draw or casemix.draw_parameters(config)
+    env_dnbi = DNBI_BY_ENVIRONMENT.get(config.environment, []) + DNBI_BY_ENVIRONMENT.get("General", [])
+    slots = []  # (day_number, kind, mechanism, is_trauma, is_mascal, etiology)
     for day in config.days:
         # Routine casualty load for the day (not part of any MASCAL surge).
         routine_ratio = 0.85 if day.tactical_setting in ["Frontal Attack", "Amphibious Assault"] else 0.50
         num_trauma = int(day.total_patients * routine_ratio)
         num_dnbi = day.total_patients - num_trauma
-        for _ in range(num_trauma):
-            tasks.append((day.day_number, draw(GENERAL_TRAUMA), day.tactical_setting, True, False))
-        for _ in range(num_dnbi):
-            tasks.append((day.day_number, draw(env_dnbi), f"DNBI - {config.environment}", False, False))
-        # MASCAL surge — additive extra casualties, trauma-heavy, tagged is_mascal.
+        slots += [(day.day_number, "routine", day.tactical_setting, True, False, None)] * num_trauma
+        slots += [(day.day_number, "dnbi", f"DNBI - {config.environment}", False, False, None)] * num_dnbi
+        # MASCAL surge: additive extra casualties, trauma-heavy, tagged is_mascal.
         if day.mascal and day.mascal_patients:
-            inj_types = TRAUMA_BY_ETIOLOGY.get(day.mascal_etiology, GENERAL_TRAUMA) if day.mascal_etiology else GENERAL_TRAUMA
             m_trauma = int(day.mascal_patients * 0.85)
-            for _ in range(m_trauma):
-                tasks.append((day.day_number, draw(inj_types), day.mascal_etiology or day.tactical_setting, True, True))
-            for _ in range(day.mascal_patients - m_trauma):
-                tasks.append((day.day_number, draw(env_dnbi), f"DNBI - {config.environment}", False, True))
+            slots += [(day.day_number, "mascal", day.mascal_etiology or day.tactical_setting, True, True,
+                       day.mascal_etiology)] * m_trauma
+            slots += [(day.day_number, "dnbi", f"DNBI - {config.environment}", False, True, None)] * (day.mascal_patients - m_trauma)
+    severities = casemix.assign_severities([sl[1] for sl in slots], draw)
+    decks: Dict[tuple, _Deck] = {}
+    deck_rng = random.Random(draw["seed"] + 2)  # the same draw reproduces the same case types
+    tasks = []
+    for (day_no, _kind, mech, is_trauma, is_mascal, etiology), sev in zip(slots, severities):
+        tier = "serious" if sev in ("critical", "severe") else sev
+        if is_trauma:
+            pool = (TRAUMA_TIERS.get(etiology) if etiology else None) or GENERAL_TRAUMA_TIERS
+            pool = pool[tier]
+        else:
+            pool = [c for c in env_dnbi if dnbi_tier(c) == tier] or env_dnbi
+        tasks.append((day_no, decks.setdefault(tuple(pool), _Deck(pool, deck_rng)).draw(), mech, is_trauma, is_mascal, sev))
     return tasks
 
 def _generate_one(task: tuple, environment: str, region: str, mets: Optional[List[str]] = None,
                   profile: Optional[Dict] = None, ctx: Optional[Dict] = None) -> Dict:
-    _day, case_type, mech, is_trauma, is_mascal = task
+    _day, case_type, mech, is_trauma, is_mascal = task[:5]
     try:
         return generate_case_sync(case_type, mech, environment, region, is_mascal, mets, profile, ctx)
     except Exception as e:
@@ -2040,13 +2108,15 @@ def _controller_export(config: ExerciseConfig, schedule: List[Dict], cases: List
 
 def _run_generation(config: ExerciseConfig, job_id: str):
     try:
-        tasks = _build_case_tasks(config)
+        draw = casemix.draw_parameters(config)  # this exercise's draw from the scenario's envelopes; saved with it
+        tasks = _build_case_tasks(config, draw)
         total = len(tasks)
-        profiles = casemix.assign_profiles(tasks, config, lambda ct, mech, masc: "DCS" in determine_case_phases(ct, mech, masc))
+        profiles = casemix.assign_profiles(tasks, config, draw)
         days_by_no = {d.day_number: d for d in config.days}
         ctxs = [{"setting": days_by_no[t[0]].tactical_setting if t[0] in days_by_no else "", "threat": config.threat_level}
                 for t in tasks]
-        print(f"Case mix for '{config.exercise_name}': {casemix.summarize(profiles)}; care policy {casemix.care_policy(config)}")
+        print(f"Case mix for '{config.exercise_name}' (seed {draw['seed']}): {casemix.summarize(profiles)}; "
+              f"care policy {casemix.care_policy(config)}")
         budget = _Budget(max_calls=MAX_CALLS_PER_CASE * total, max_usd=MAX_USD_PER_EXERCISE)
         _tl.budget = budget
         _job_update(job_id, progress="Generating cases...", completed=0, total=total)
@@ -2108,7 +2178,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         if SessionLocal:
             db = SessionLocal()
             try:
-                ex = Exercise(name=config.exercise_name, config=config.dict(), cases=cases,
+                ex = Exercise(name=config.exercise_name, config=dict(config.dict(), case_mix=draw), cases=cases,
                               msel_data=schedule, warno_text=warno, annex_q_text=annex, medroe_text=medroe,
                               road_to_war_text=road_to_war, fragos=fragos)
                 db.add(ex)
@@ -2117,7 +2187,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
                 db.close()
         elif archive.enabled():
             try:
-                archive.save(name=config.exercise_name, config=config.dict(), cases=cases, msel_data=schedule,
+                archive.save(name=config.exercise_name, config=dict(config.dict(), case_mix=draw), cases=cases, msel_data=schedule,
                              warno_text=warno, annex_q_text=annex, medroe_text=medroe,
                              road_to_war_text=road_to_war, fragos=fragos)
             except Exception as e:  # never lose the generated package over an archive failure

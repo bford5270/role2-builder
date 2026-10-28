@@ -1,4 +1,4 @@
-"""Derive the case-mix baseline (backend/casemix_data.json) from an export of archived exercises.
+"""Summarise the OLD generator's case mix from an export of archived exercises (comparison data only, not used at runtime).
 
     python scripts/derive_case_mix.py path/to/exercises.json [--max-id 36]
 
@@ -131,7 +131,7 @@ def main(path, max_id):
         d = dist(counter, ("us", "partner", "civilian", "enemy"))
         out["population"][daytype] = {"n": sum(counter.values()), **d}
 
-    target = __file__.replace("scripts", "backend").replace("derive_case_mix.py", "casemix_data.json")
+    target = __file__.replace("scripts", "docs").replace("derive_case_mix.py", "archive_case_mix_baseline.json")
     json.dump(out, open(target, "w", encoding="utf-8"), indent=1)
     print("wrote", target)
     for kind in ("dnbi", "routine", "mascal"):

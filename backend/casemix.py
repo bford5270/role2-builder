@@ -1,77 +1,109 @@
-"""Scenario-conditioned case mix.
+"""Scenario-bounded, per-exercise case mix.
 
-Instead of letting the model pick each casualty's triage, outcome and population on its own (which gave
-a narrow, repetitive mix and ignored the MEDROE), the pipeline assigns them here, in code, from the
-scenario the user selected, and hands them to the case prompt as requirements.
+How it works
+------------
+1. ENVELOPES. Every tunable number is a (min, mode, max) range, taken from the literature where one exists
+   (see SOURCES) and labelled provisional where it does not. The scenario the user selected (threat level,
+   tactical settings, MASCAL etiologies, Humanitarian days, evacuation access) widens or shifts each range.
+   The scenario therefore BOUNDS what any exercise can look like.
+2. DRAW. At the start of each exercise one value is drawn per parameter from its envelope (triangular
+   distribution), from a fresh random seed. Two exercises with identical settings get different draws, so
+   no two are the same, but every draw lies inside the scenario's envelope.
+3. ASSIGN. Severity is assigned to every casualty slot first (critical / severe / moderate / mild), then the
+   case type is picked from a pool of that severity, then triage, outcome, population and night arrival are
+   assigned from the drawn parameters. The draw (seed, envelopes, values) is saved with the exercise, and the
+   same draw reproduces the same mix.
 
-  * Triage mix is conditioned on the case's group: DNBI, routine trauma by tactical setting, or MASCAL
-    by etiology, and on its acuity tier (surgical / non-surgical trauma). Baseline rates come from
-    casemix_data.json, derived from archived exercises by scripts/derive_case_mix.py.
-  * Disposition is conditioned on triage and tier.
-  * Patient population (US / partner / host-nation civilian / enemy combatant-EPW) follows the care
-    policy: if the exercise is meant to treat civilians or enemy combatants there are some, otherwise
-    there are one or two. The same policy is written into the MEDROE prompt, so the two cannot disagree.
-  * Night arrivals match the share the scheduler puts in the night wave.
-
-Every exercise draws its own mix: each baseline weight is jittered by up to +/-JITTER (relative), and
-counts are allocated per group (largest remainder) so the totals track the targets.
-
-FLOORS and TIER_MULT are PROVISIONAL clinical assumptions (the archive has no Expectant or Died of
-Wounds cases at all, because the old prompt never produced them). They need clinician review.
+The model then writes each case around its assigned requirements, and the code overrides the fields afterwards.
 """
-import json
 import random
-from pathlib import Path
-from typing import Callable, Dict, List, Optional
-
-DATA = json.loads((Path(__file__).with_name("casemix_data.json")).read_text(encoding="utf-8"))
+from typing import Dict, List, Optional, Tuple
 
 TRIAGE = ("T1", "T2", "T3", "Expectant")
 DISPOSITION = ("RTD", "Evac to Role 3", "Hold at Role 2", "Died of Wounds", "Expectant")
+SEVERITIES = ("critical", "severe", "moderate", "mild")
 POPULATIONS = ("us", "partner", "civilian", "enemy")
 HUMANITARIAN = {"Humanitarian Assistance", "Stability Operations"}
+NIGHT_SHARE = 0.35  # must match generate_schedule's night wave (round(total_patients * 0.35))
+BLAST_FAMILY = {"IED/Blast", "VBIED", "UAS/Drone Strike", "Indirect Fire/Mortar"}
 
-JITTER = 0.15          # each baseline weight varies by up to +/-15% (relative) per exercise
-NIGHT_SHARE = 0.35     # must match generate_schedule's night wave (round(total_patients * 0.35))
+SOURCES = {
+    "kotwal2018": "Kotwal RS et al. A US military Role 2 forward surgical team database study of combat mortality in "
+                  "Afghanistan. J Trauma Acute Care Surg 2018;85:603-12 (n=9,557 battle-injured; PMID 29851907)",
+    "kotwal2016": "Kotwal RS et al. The effect of a golden hour policy on the morbidity and mortality of combat casualties. "
+                  "JAMA Surg 2016;151:15-24",
+    "ews": "Emergency War Surgery (Borden Institute), triage chapter: 10-20% of casualties presenting to a surgical unit "
+           "are emergent",
+    "frykberg": "Frykberg ER. Triage: principles and practice. Scand J Surg 2005;94:272-8 (10-25% of blast casualties "
+                "have life-threatening injuries)",
+    "provisional": "No published figure found; bounded widely by judgment. Needs clinician review.",
+}
 
-# Acuity tier multipliers on the baseline triage weights (trauma only). The archive baseline mixes
-# surgical and non-surgical cases, so these push surgical cases toward T1 and non-surgical toward T2/T3.
-TIER_MULT = {
-    "surgical": {"T1": 1.15, "T2": 0.60, "T3": 0.15, "Expectant": 1.0},
-    "nonsurgical": {"T1": 0.70, "T2": 1.30, "T3": 2.00, "Expectant": 1.0},
+# name: (min, mode, max, source). Severity shares are of each group's casualties.
+PARAMS: Dict[str, Tuple[float, float, float, str]] = {
+    # --- severity mix (kotwal2018 CMI-PH: ~8% critical, ~11% severe, ~24% moderate, ~55% mild among battle-injured at Role 2)
+    "serious_share.routine": (0.14, 0.194, 0.25, "kotwal2018"),   # critical + severe; EWS 10-20% emergent
+    # Provisional. Frykberg: 10-25% of blast casualties are life-threatening; a Role 2 receives the more seriously injured, so
+    # the mass-casualty envelope deliberately sits above that and above the routine mix.
+    "serious_share.mascal": (0.20, 0.30, 0.45, "provisional"),
+    "serious_share.dnbi": (0.03, 0.08, 0.15, "provisional"),
+    "critical_fraction": (0.30, 0.42, 0.55, "kotwal2018"),        # critical / (critical + severe) = 8.1/19.4
+    "moderate_of_rest": (0.25, 0.30, 0.38, "kotwal2018"),         # moderate / (moderate + mild) ~ 24/79
+    # --- mortality at Role 2 by severity (kotwal2018: 40.0% critical, 11.2% severe, 0.8% moderate, <0.1% mild)
+    "mortality.critical": (0.30, 0.40, 0.50, "kotwal2018"),
+    "mortality.severe": (0.08, 0.112, 0.15, "kotwal2018"),
+    "mortality.moderate": (0.004, 0.008, 0.015, "kotwal2018"),
+    "mortality.mild": (0.0, 0.0005, 0.001, "kotwal2018"),
+    # kotwal2016: faster transport cut pre-hospital deaths but not died-of-wounds, and nothing quantifies what happens
+    # when onward evacuation is denied. Directional only.
+    "delay_mortality_slope": (0.0, 0.9, 1.8, "provisional"),
+    "expectant_given_critical": (0.0, 0.05, 0.12, "provisional"),
+    # --- onward movement and return to duty
+    "evac_base": (0.80, 0.90, 0.97, "provisional"),               # share evacuated when evacuation is fully permissive
+    "evac_exponent": (1.0, 1.5, 2.2, "provisional"),
+    "rtd_mild": (0.50, 0.70, 0.90, "provisional"),
+    "rtd_moderate": (0.10, 0.25, 0.40, "provisional"),
+    # --- who is treated (kotwal2018: 21.3% civilian/other, 37.4% US, 37.3% Afghan forces, 4.0% non-US coalition)
+    "civilian_share": (0.12, 0.213, 0.30, "kotwal2018"),
+    "partner_share": (0.08, 0.20, 0.41, "provisional"),            # ceiling from kotwal2018: Afghan forces + non-US coalition = 41%
+    "enemy_share_detainee_day": (0.06, 0.12, 0.20, "provisional"),
+    "enemy_share_other": (0.04, 0.08, 0.12, "provisional"),
 }
-# Minimum absolute shares (added before normalising), keyed by (group kind, tier).
-TRIAGE_FLOOR = {
-    ("mascal", "surgical"): {"Expectant": 0.05},
-    ("routine", "surgical"): {"Expectant": 0.03},
-    ("routine", "nonsurgical"): {"T3": 0.10},
-    ("mascal", "nonsurgical"): {"T3": 0.08},
-    ("dnbi", "dnbi"): {"T3": 0.10},
-}
-# Minimum absolute disposition shares, keyed by (trauma/dnbi group, triage).
-DISPOSITION_FLOOR = {
-    ("trauma", "T1"): {"Died of Wounds": 0.04, "Hold at Role 2": 0.05},
-    ("trauma", "T2"): {"Hold at Role 2": 0.08},
-    ("trauma", "T3"): {"RTD": 0.35, "Hold at Role 2": 0.15},
-    ("trauma", "Expectant"): {"Expectant": 0.70, "Died of Wounds": 0.30},
-    ("dnbi", "T1"): {"Hold at Role 2": 0.05},
-    ("dnbi", "T3"): {"RTD": 0.30},
-    ("dnbi", "Expectant"): {"Expectant": 0.70, "Died of Wounds": 0.30},
-}
-# Population shares not in the archive (it has essentially no enemy-combatant patients).
-ENEMY_SHARE_DETAINEE_DAY = 0.12   # of a Detainee Ops day's patients; at least one per such day
-ENEMY_SHARE_OTHER = 0.08          # when enemy care is enabled but no day has Detainee Ops
 
-# --- evacuation access: how realistic is onward evacuation to Role 3 on a given day? -------------------
-# Mirrors main._threat_evac_mult (Peer/Near-Peer 3.0, Hybrid 2.0, Irregular 1.5, else 1.0) so the case mix
-# and the FRAGOs agree about how contested the corridor is. 1.0 = permissive; lower = denied or scarce.
+NOT_A_PROBABILITY = {"delay_mortality_slope", "evac_exponent"}  # every other parameter is a 0-1 share or rate
+
+# Severity -> triage. Provisional: the share of "severe" casualties sorted T1 vs T2, and so on.
+SEVERITY_TO_TRIAGE = {
+    "critical": {"T1": 1.0},
+    "severe": {"T1": 0.70, "T2": 0.30},
+    "moderate": {"T2": 0.85, "T3": 0.15},
+    "mild": {"T3": 0.90, "T2": 0.10},
+}
+EXPECTANT_DISPOSITION_DIES = 0.30   # of casualties triaged expectant, the share recorded as Died of Wounds
+
+# --- evacuation access: how realistic is onward evacuation to Role 3 on a given day? ----------------------
+# Mirrors main._threat_evac_mult (Peer/Near-Peer 3.0, Hybrid 2.0, Irregular 1.5, else 1.0) so the case mix and the
+# FRAGOs agree about how contested the corridor is. 1.0 = permissive; lower = denied or scarce.
 _THREAT_ACCESS = (("peer", 1 / 3.0), ("hybrid", 1 / 2.0), ("irregular", 1 / 1.5))
 _SETTING_ACCESS = {
     "Retrograde Operations": 0.80, "Frontal Attack": 0.85, "Amphibious Assault": 0.85,
     "Defensive Operations": 0.90, "Convoy Operations": 0.95,
     "Stability Operations": 1.10, "Humanitarian Assistance": 1.20,
 }
-ACCESS_EXPONENT = 1.5   # how steeply Role 3 evacuation falls off as access falls (provisional)
+
+POPULATION_PROMPT = {
+    "us": "a US service member",
+    "partner": "a partner-force soldier",
+    "civilian": "a host-nation civilian (non-combatant); apply the civilian-care provisions of the MEDROE",
+    "enemy": ("an enemy combatant held as a detainee/EPW; apply the detainee-care provisions of the MEDROE and "
+              "make 9-line line 8 show enemy/detainee status"),
+}
+SEVERITY_PROMPT = {
+    "critical": "critical: life-threatening and resuscitation-dependent, with high mortality even with prompt care",
+    "severe": "severe: serious injuries needing surgery or intensive care, likely to survive with timely care",
+    "moderate": "moderate: significant but physiologically stable; needs treatment, no resuscitation",
+    "mild": "mild: minor injury; treat and release or observe; no resuscitation or surgery",
+}
 
 
 def evac_access(config, day) -> float:
@@ -82,15 +114,6 @@ def evac_access(config, day) -> float:
     if (getattr(config, "environment", "") or "").lower() == "maritime":
         access *= 0.9
     return round(max(0.2, min(1.2, access)), 2)
-
-
-POPULATION_PROMPT = {
-    "us": "a US service member",
-    "partner": "a partner-force soldier",
-    "civilian": "a host-nation civilian (non-combatant); apply the civilian-care provisions of the MEDROE",
-    "enemy": ("an enemy combatant held as a detainee/EPW; apply the detainee-care provisions of the MEDROE and "
-              "make 9-line line 8 show enemy/detainee status"),
-}
 
 
 # --- care policy: the single source of truth shared by the MEDROE text and the case mix ---------------
@@ -129,128 +152,144 @@ def policy_text(policy: Dict) -> str:
             + "- US and partner-force personnel: authorized.")
 
 
-# --- helpers ---------------------------------------------------------------------------------------
+# --- envelopes: the scenario bounds every parameter ------------------------------------------------------
 
-def _jitter(weights: Dict[str, float], rng: random.Random, amount: float = JITTER) -> Dict[str, float]:
-    out = {k: max(v, 0.0) * (1 + rng.uniform(-amount, amount)) for k, v in weights.items()}
-    total = sum(out.values()) or 1.0
-    return {k: v / total for k, v in out.items()}
+def _scenario(config) -> Dict:
+    days = list(getattr(config, "days", []) or [])
+    threat = (getattr(config, "threat_level", "") or "").lower()
+    access = [evac_access(config, d) for d in days] or [1.0]
+    return {
+        "threat": "peer" if "peer" in threat else "hybrid" if "hybrid" in threat else "irregular" if "irregular" in threat
+        else "permissive",
+        "humanitarian": any(getattr(d, "tactical_setting", "") in HUMANITARIAN for d in days),
+        "etiologies": sorted({d.mascal_etiology for d in days if getattr(d, "mascal", False) and d.mascal_etiology}),
+        "has_mascal": any(getattr(d, "mascal", False) for d in days),
+        "high_acuity": getattr(config, "casualty_acuity", "realistic") == "high",
+        "min_access": min(access), "mean_access": round(sum(access) / len(access), 2),
+    }
 
 
-def _normalise(w: Dict[str, float]) -> Dict[str, float]:
-    total = sum(w.values()) or 1.0
-    return {k: v / total for k, v in w.items()}
+def _mul(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
+    return a[0] * b[0], a[1] * b[1]
 
 
-def _with_floor(weights: Dict[str, float], floor: Optional[Dict[str, float]]) -> Dict[str, float]:
-    """Raise each floored key to at least its floor, taking the difference proportionally from the others."""
-    w = dict(weights)
-    for k, f in (floor or {}).items():
-        if w.get(k, 0.0) < f:
-            deficit = f - w.get(k, 0.0)
-            others = {o: v for o, v in w.items() if o != k}
-            pool = sum(others.values())
-            for o in others:
-                w[o] = max(0.0, w[o] - deficit * (w[o] / pool if pool else 0))
-            w[k] = f
-    return _normalise(w)
+def _threat(s: Dict, peer: Tuple[float, float], hybrid: Tuple[float, float]) -> Tuple[float, float]:
+    return {"peer": peer, "hybrid": hybrid}.get(s["threat"], (1.0, 1.0))
 
+
+# Scenario widening/shifting of each envelope: (low multiplier, high multiplier). Directional and provisional: the
+# literature supports the direction (large-scale combat and blast mass-casualty events are more severe; humanitarian
+# work is milder), not the size.
+def _acuity(s: Dict) -> Tuple[float, float]:
+    """casualty_acuity="high" is a training-emphasis switch: 2-3x as many critical and severe casualties."""
+    return (2.0, 3.0) if s["high_acuity"] else (1.0, 1.0)
+
+
+SCALE = {
+    "serious_share.routine": lambda s: _mul(_mul(_threat(s, (1.0, 1.30), (1.0, 1.15)), (0.70, 0.90) if s["humanitarian"] else (1.0, 1.0)), _acuity(s)),
+    "serious_share.mascal": lambda s: _mul(_mul(_threat(s, (1.0, 1.15), (1.0, 1.10)),
+                                                (1.0, 1.20) if BLAST_FAMILY & set(s["etiologies"]) else (0.90, 1.0)), _acuity(s)),
+    "serious_share.dnbi": _acuity,
+    "expectant_given_critical": lambda s: (1.0, 2.0) if s["threat"] in ("peer", "hybrid") else (1.0, 1.0),
+    "civilian_share": lambda s: (1.0, 1.4) if s["humanitarian"] else (1.0, 1.0),
+}
+
+
+def _envelope(name: str, scenario: Dict) -> Tuple[float, float, float]:
+    lo, mode, hi = PARAMS[name][:3]
+    lo_m, hi_m = SCALE[name](scenario) if name in SCALE else (1.0, 1.0)
+    lo, hi = lo * lo_m, hi * hi_m
+    mode = min(max(mode * (lo_m + hi_m) / 2, lo), hi)
+    if name not in NOT_A_PROBABILITY:
+        lo, mode, hi = (min(max(v, 0.0), 0.95) for v in (lo, mode, hi))
+    return round(lo, 4), round(mode, 4), round(hi, 4)
+
+
+def draw_parameters(config, rng: Optional[random.Random] = None) -> Dict:
+    """Draw one value per parameter from the scenario's envelopes. Saved with the exercise; reproducible from `seed`."""
+    seed = (rng or random.Random()).randrange(2 ** 31)
+    r = random.Random(seed)
+    scenario = _scenario(config)
+    envelopes = {n: list(_envelope(n, scenario)) for n in PARAMS}
+    params = {n: round(r.triangular(lo, hi, mode), 4) for n, (lo, mode, hi) in envelopes.items()}
+    return {"version": 2, "seed": seed, "scenario": scenario, "envelopes": envelopes, "params": params,
+            "sources": {n: PARAMS[n][3] for n in PARAMS}}
+
+
+# --- severity first --------------------------------------------------------------------------------------
 
 def _counts(n: int, weights: Dict[str, float]) -> Dict[str, int]:
     """Largest-remainder allocation of n items across weights."""
-    raw = {k: n * v for k, v in weights.items()}
+    total = sum(weights.values()) or 1.0
+    raw = {k: n * v / total for k, v in weights.items()}
     base = {k: int(v) for k, v in raw.items()}
     for k in sorted(raw, key=lambda k: raw[k] - base[k], reverse=True)[: n - sum(base.values())]:
         base[k] += 1
     return base
 
 
-def _group(task, is_surgical: bool):
-    _day, _case_type, mech, is_trauma, is_mascal = task[:5]
-    if not is_trauma:
-        return "dnbi", "_pooled", "dnbi"
-    kind = "mascal" if is_mascal else "routine"
-    return kind, mech, ("surgical" if is_surgical else "nonsurgical")
+def severity_weights(kind: str, p: Dict[str, float]) -> Dict[str, float]:
+    serious = p[f"serious_share.{kind}"]
+    rest = 1.0 - serious
+    return {"critical": serious * p["critical_fraction"], "severe": serious * (1 - p["critical_fraction"]),
+            "moderate": rest * p["moderate_of_rest"], "mild": rest * (1 - p["moderate_of_rest"])}
 
 
-def _triage_weights(kind: str, key: str, tier: str, access: float = 1.0) -> Dict[str, float]:
-    table = DATA["triage"][kind]
-    row = table.get(key) or table["_pooled"]
-    w = {t: float(row.get(t, 0.0)) for t in TRIAGE}
-    if tier in TIER_MULT:
-        w = _normalise({t: w[t] * TIER_MULT[tier][t] for t in TRIAGE})
-    floor = dict(TRIAGE_FLOOR.get((kind, tier)) or {})
-    if "Expectant" in floor:
-        # Where resources and evacuation are scarce, more casualties are triaged expectant.
-        floor["Expectant"] *= 1 + 2 * max(0.0, 1.0 - access)
-    return _with_floor(w, floor)
-
-
-def _disposition_weights(group: str, triage: str, tier: str, access: float = 1.0) -> Dict[str, float]:
-    row = DATA["disposition"][group][triage]
-    w = {d: float(row.get(d, 0.0)) for d in DISPOSITION}
-    if tier == "surgical":
-        w["RTD"] = 0.0  # a surgical casualty is never returned to duty from Role 2
-    w = _normalise(w)
-    # Evacuation access scales how many go on to Role 3. When it is scarce (large-scale combat) the rest are held
-    # at Role 2 for prolonged care, and the sickest die of wounds; when permissive, fewer need to be held.
-    f = access ** ACCESS_EXPONENT
-    if f < 1.0:
-        moved = w["Evac to Role 3"] * (1.0 - f)
-        w["Evac to Role 3"] -= moved
-        if triage == "T1":
-            w["Hold at Role 2"] += moved * 0.80
-            w["Died of Wounds"] += moved * 0.20
-        elif triage in ("T2", "T3") and group == "dnbi":
-            w["Hold at Role 2"] += moved * 0.70
-            w["RTD"] += moved * 0.30 if tier != "surgical" else 0.0
-        else:
-            w["Hold at Role 2"] += moved
-    elif f > 1.0:
-        moved = w["Hold at Role 2"] * min(0.5, (f - 1.0))
-        w["Hold at Role 2"] -= moved
-        w["Evac to Role 3"] += moved
-    return _with_floor(_normalise(w), DISPOSITION_FLOOR.get((group, triage)))
-
-
-# --- the assignment --------------------------------------------------------------------------------
-
-def assign_profiles(tasks: List[tuple], config, surgical_fn: Callable[[str, str, bool], bool],
-                    rng: Optional[random.Random] = None) -> List[Dict]:
-    """One profile per task: {triage, disposition, population, night, tier}.
-
-    tasks are (day_number, case_type, mechanism, is_trauma, is_mascal). surgical_fn(case_type, mechanism,
-    is_mascal) says whether the case needs surgery (it decides the acuity tier)."""
-    rng = rng or random.Random()
-    n = len(tasks)
-    profiles: List[Dict] = [{} for _ in tasks]
-    tiers = [_group(t, surgical_fn(t[1], t[2], t[4]))[2] for t in tasks]
-    days = {d.day_number: d for d in config.days}
-    access = [evac_access(config, days[t[0]]) if t[0] in days else 1.0 for t in tasks]
-
-    # 1. triage, allocated per (kind, key, tier, evacuation access) group with a jittered baseline
-    groups: Dict[tuple, List[int]] = {}
-    for i, t in enumerate(tasks):
-        kind, key, tier = _group(t, tiers[i] == "surgical")
-        groups.setdefault((kind, key, tier, access[i]), []).append(i)
-    for (kind, key, tier, acc), idx in groups.items():
-        w = _jitter(_triage_weights(kind, key, tier, acc), rng)
-        labels = [lab for lab, c in _counts(len(idx), w).items() for _ in range(c)]
+def assign_severities(kinds: List[str], draw: Dict, rng: Optional[random.Random] = None) -> List[str]:
+    """One severity per casualty slot. kinds are 'routine' / 'mascal' / 'dnbi' (trauma groups use their own mix)."""
+    rng = rng or random.Random(draw["seed"])
+    out = [""] * len(kinds)
+    for kind in ("routine", "mascal", "dnbi"):
+        idx = [i for i, k in enumerate(kinds) if k == kind]
+        labels = [s for s, c in _counts(len(idx), severity_weights(kind, draw["params"])).items() for _ in range(c)]
         rng.shuffle(labels)
-        for i, lab in zip(idx, labels):
-            profiles[i].update(triage=lab, tier=tier, evac_access=acc)
+        for i, s in zip(idx, labels):
+            out[i] = s
+    return out
 
-    # 2. disposition given triage, tier and evacuation access (weights jittered once per combination)
-    cache: Dict[tuple, Dict[str, float]] = {}
-    for i, t in enumerate(tasks):
-        grp = "trauma" if t[3] else "dnbi"
-        key = (grp, profiles[i]["triage"], profiles[i]["tier"], access[i])
-        if key not in cache:
-            cache[key] = _jitter(_disposition_weights(*key), rng)
-        w = cache[key]
-        profiles[i]["disposition"] = rng.choices(list(w), weights=list(w.values()))[0]
 
-    # 3. patient population, following the care policy
+# --- the rest of the assignment --------------------------------------------------------------------------
+
+def _pick(weights: Dict[str, float], rng: random.Random) -> str:
+    return rng.choices(list(weights), weights=list(weights.values()))[0]
+
+
+def _triage(severity: str, p: Dict[str, float], access: float, rng: random.Random) -> str:
+    # Where resources and evacuation are scarce, more critical casualties are triaged expectant.
+    if severity == "critical" and rng.random() < min(0.6, p["expectant_given_critical"] * (1 + 2 * max(0.0, 1.0 - access))):
+        return "Expectant"
+    return _pick(SEVERITY_TO_TRIAGE[severity], rng)
+
+
+def _disposition(severity: str, triage: str, access: float, p: Dict[str, float], rng: random.Random) -> str:
+    if triage == "Expectant":
+        return "Died of Wounds" if rng.random() < EXPECTANT_DISPOSITION_DIES else "Expectant"
+    mult = min(3.0, 1 + (1 - access) * p["delay_mortality_slope"])
+    if rng.random() < min(0.85, p[f"mortality.{severity}"] * mult):
+        return "Died of Wounds"
+    rtd = {"mild": p["rtd_mild"], "moderate": p["rtd_moderate"]}.get(severity, 0.0)
+    if rng.random() < rtd:
+        return "RTD"
+    evac = min(0.98, max(0.02, p["evac_base"] * access ** p["evac_exponent"]))
+    return "Evac to Role 3" if rng.random() < evac else "Hold at Role 2"
+
+
+def assign_profiles(tasks: List[tuple], config, draw: Dict, rng: Optional[random.Random] = None) -> List[Dict]:
+    """One profile per task: {severity, triage, disposition, population, night, evac_access}.
+
+    tasks are (day_number, case_type, mechanism, is_trauma, is_mascal, severity)."""
+    p = draw["params"]
+    rng = rng or random.Random(draw["seed"] + 1)
+    n = len(tasks)
+    days = {d.day_number: d for d in config.days}
+    profiles: List[Dict] = []
+    for t in tasks:
+        access = evac_access(config, days[t[0]]) if t[0] in days else 1.0
+        triage = _triage(t[5], p, access, rng)
+        profiles.append({"severity": t[5], "triage": triage, "evac_access": access,
+                         "disposition": _disposition(t[5], triage, access, p, rng)})
+
+    # patient population, following the care policy
     policy = care_policy(config)
     by_day: Dict[int, List[int]] = {}
     for i, t in enumerate(tasks):
@@ -270,22 +309,18 @@ def assign_profiles(tasks: List[tuple], config, surgical_fn: Callable[[str, str,
             for d in det_days:
                 cand = [i for i in by_day.get(d, []) if not tasks[i][4]]
                 if cand:
-                    k = max(1, round(len(cand) * ENEMY_SHARE_DETAINEE_DAY * (1 + rng.uniform(-JITTER, JITTER))))
-                    take(cand, min(k, len(cand)), "enemy")
+                    take(cand, min(max(1, round(len(cand) * p["enemy_share_detainee_day"])), len(cand)), "enemy")
         elif routine:
-            take(routine, max(1, round(len(routine) * ENEMY_SHARE_OTHER * (1 + rng.uniform(-JITTER, JITTER)))), "enemy")
+            take(routine, max(1, round(len(routine) * p["enemy_share_other"])), "enemy")
     if policy["civilians"]:
         for d, idx in by_day.items():
-            daytype = "humanitarian" if getattr(days.get(d), "tactical_setting", "") in HUMANITARIAN else "other"
-            share = DATA["population"][daytype]["civilian"] * (1 + rng.uniform(-JITTER, JITTER))
+            humanitarian = getattr(days.get(d), "tactical_setting", "") in HUMANITARIAN
+            share = min(0.45, p["civilian_share"] * (1.3 if humanitarian else 1.0))
             take(idx, round(len(idx) * share), "civilian")
         if n and "civilian" not in pop:
             take(list(range(n)), 1, "civilian")  # "some", even in a small exercise
-    # Partner forces are always eligible; their share comes from the archive.
-    for d, idx in by_day.items():
-        daytype = "humanitarian" if getattr(days.get(d), "tactical_setting", "") in HUMANITARIAN else "other"
-        share = DATA["population"][daytype]["partner"] * (1 + rng.uniform(-JITTER, JITTER))
-        take(idx, round(len(idx) * share), "partner")
+    for idx in by_day.values():  # partner forces are always eligible
+        take(idx, round(len(idx) * p["partner_share"]), "partner")
     # A population the policy does not cover appears only once or twice (emergency stabilization of a walk-in).
     excluded = [lab for lab, on in (("enemy", policy["enemy_combatants"]), ("civilian", policy["civilians"])) if not on]
     if excluded and routine:
@@ -295,7 +330,7 @@ def assign_profiles(tasks: List[tuple], config, surgical_fn: Callable[[str, str,
     for i in range(n):
         profiles[i]["population"] = pop[i]
 
-    # 4. night arrivals: the same share of each Night Ops day's routine patients the scheduler puts in its night wave
+    # night arrivals: the same share of each Night Ops day's routine patients the scheduler puts in its night wave
     for d, idx in by_day.items():
         if getattr(days.get(d), "night_ops", False):
             cand = [i for i in idx if not tasks[i][4]]
@@ -303,16 +338,16 @@ def assign_profiles(tasks: List[tuple], config, surgical_fn: Callable[[str, str,
             rng.shuffle(cand)
             for i in cand[:count]:
                 profiles[i]["night"] = True
-    for p in profiles:
-        p.setdefault("night", False)
+    for prof in profiles:
+        prof.setdefault("night", False)
     return profiles
 
 
 def summarize(profiles: List[Dict]) -> Dict:
-    """Counts per triage / disposition / population, for logs and previews."""
-    out: Dict[str, Dict[str, int]] = {"triage": {}, "disposition": {}, "population": {}, "night": {}}
-    for p in profiles:
-        for k, v in (("triage", p["triage"]), ("disposition", p["disposition"]),
-                     ("population", p["population"]), ("night", "night" if p["night"] else "day")):
+    """Counts per severity / triage / disposition / population, for logs and previews."""
+    out: Dict[str, Dict[str, int]] = {"severity": {}, "triage": {}, "disposition": {}, "population": {}, "night": {}}
+    for pr in profiles:
+        for k, v in (("severity", pr["severity"]), ("triage", pr["triage"]), ("disposition", pr["disposition"]),
+                     ("population", pr["population"]), ("night", "night" if pr["night"] else "day")):
             out[k][v] = out[k].get(v, 0) + 1
     return out
