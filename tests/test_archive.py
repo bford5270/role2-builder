@@ -84,3 +84,48 @@ def test_disabled_without_bucket(monkeypatch):
     c = TestClient(main.app)
     assert c.get("/exercises").json() == {"exercises": []}
     assert c.get("/exercises/1").status_code == 404
+
+
+CASES = [
+    {"meta": {"title": "Blast Injury", "target_specialty": "Trauma", "estimated_duration": "4-6 hours"},
+     "zmist": {"zap": "11111", "mechanism": "M" * 400, "injuries": "TM rupture"},
+     "triage_category": "T2 Delayed", "disposition": "Evac to Role 3", "controller": {"big": "x" * 5000}},
+    {"meta": {"title": "Second"}, "zmist": {"zap": "22222"}, "triage_category": "T1 Immediate"},
+    "not-a-dict",
+]
+MSEL = [{"zap": "11111", "day": 1, "time": "0800"}, {"zap": "99999", "day": 2}]
+
+
+def _serve(monkeypatch, as_text: bool):
+    _use_fake(monkeypatch)
+    monkeypatch.setattr(main, "SessionLocal", None)
+    dump = json.dumps if as_text else (lambda v: v)  # Railway rows hold JSON columns as text
+    archive.put({"id": 7, "name": "KS27", "created_at": "2026-09-24T12:00:00", "config": CONFIG,
+                 "cases": dump(CASES), "msel_data": dump(MSEL)})
+    return TestClient(main.app)
+
+
+def test_case_list_is_compact_and_tolerates_text_or_json(monkeypatch):
+    for as_text in (True, False):
+        c = _serve(monkeypatch, as_text)
+        body = c.get("/exercises/7/cases").json()
+        assert body["name"] == "KS27" and len(body["cases"]) == 3
+        first = body["cases"][0]
+        assert first["zap"] == "11111" and first["title"] == "Blast Injury" and first["triage"] == "T2 Delayed"
+        assert len(first["mechanism"]) <= 220 and "controller" not in first
+        assert body["cases"][2]["title"] is None  # malformed entry doesn't break the list
+
+
+def test_single_case_drops_controller_and_attaches_msel_row(monkeypatch):
+    c = _serve(monkeypatch, True)
+    body = c.get("/exercises/7/cases/0").json()
+    assert body["has_controller"] is True and "controller" not in body["case"]
+    assert body["schedule"] == {"zap": "11111", "day": 1, "time": "0800"}
+    assert c.get("/exercises/7/cases/1").json()["schedule"] is None
+
+
+def test_case_endpoints_404(monkeypatch):
+    c = _serve(monkeypatch, True)
+    assert c.get("/exercises/7/cases/3").status_code == 404
+    assert c.get("/exercises/7/cases/-1").status_code == 404
+    assert c.get("/exercises/8/cases").status_code == 404

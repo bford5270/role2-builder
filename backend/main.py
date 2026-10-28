@@ -2006,6 +2006,51 @@ async def get_exercise(exercise_id: int):
     ex = _load_exercise(exercise_id)
     return {"id": ex.id, "name": ex.name, "created_at": ex.created_at, "config": ex.config, "cases": ex.cases, "msel_data": ex.msel_data, "fragos": ex.fragos or []}
 
+def _json_list(value: Any) -> List[Any]:
+    """Archived rows from Railway hold JSON columns as text; accept either form."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    return value if isinstance(value, list) else []
+
+def _obj(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+def _clip(value: Any, limit: int) -> str:
+    text = value if isinstance(value, str) else ""
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+@app.get("/exercises/{exercise_id}/cases")
+async def list_exercise_cases(exercise_id: int):
+    """One compact row per case for the history viewer (a few KB instead of the 2 MB record)."""
+    ex = _load_exercise(exercise_id)
+    rows = []
+    for i, c in enumerate(_json_list(ex.cases)):
+        c = _obj(c)
+        meta, zmist = _obj(c.get("meta")), _obj(c.get("zmist"))
+        rows.append({
+            "index": i, "zap": zmist.get("zap"), "title": meta.get("title"),
+            "triage": c.get("triage_category"), "disposition": c.get("disposition"),
+            "specialty": meta.get("target_specialty"), "duration": meta.get("estimated_duration"),
+            "mechanism": _clip(zmist.get("mechanism"), 220), "injuries": _clip(zmist.get("injuries"), 160),
+        })
+    return {"id": ex.id, "name": ex.name, "cases": rows}
+
+@app.get("/exercises/{exercise_id}/cases/{case_index}")
+async def get_exercise_case(exercise_id: int, case_index: int):
+    """One full case, without the large controller decision-tree layer, plus its MSEL row."""
+    ex = _load_exercise(exercise_id)
+    cases = _json_list(ex.cases)
+    if not 0 <= case_index < len(cases):
+        raise HTTPException(status_code=404, detail="Case not found")
+    case = _obj(cases[case_index])
+    zap = _obj(case.get("zmist")).get("zap")
+    schedule = next((_obj(s) for s in _json_list(ex.msel_data) if zap and _obj(s).get("zap") == zap), None)
+    return {"index": case_index, "has_controller": "controller" in case, "schedule": schedule,
+            "case": {k: v for k, v in case.items() if k != "controller"}}
+
 @app.get("/exercises/{exercise_id}/download")
 async def download_exercise(exercise_id: int):
     ex = _load_exercise(exercise_id)
