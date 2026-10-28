@@ -34,6 +34,12 @@ publishes the bundle to S3 → EventBridge rule `rb-publish-chains-r2ra`
 starts the `r2ra` pipeline → live in ~15 min. Docs/markdown-only pushes
 deliberately do not deploy.
 
+Saved exercises (`/history`) are stored in S3, not a database: bucket
+`role2-exercises-885232248320`, code in `backend/archive.py`, instance-role
+policy `role2-exercises-archive` (details in README.md § Dockerfile / build
+bundle). Deliberately no Aurora/RDS: cost. The old data came from Railway
+Postgres (36 rows) via `scripts/import_exercises.py`.
+
 **Never change** the buildspec artifact shape (Dockerfile,
 `requirements.txt`, `backend/**`) or the container's internal port
 (8000) without making the matching change in the R2RA repo

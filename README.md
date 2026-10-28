@@ -96,7 +96,15 @@ The `buildspec.yml` artifact selection (`Dockerfile`, `backend/`,
 > - The container receives only **`CORS_ORIGINS`** and **`GEMINI_API_KEY`** as
 >   environment variables. They are set on the `r2ra-prod` EB environment, not
 >   in this repo.
-> - The container must **not assume a `DATABASE_URL`**.
+> - The container must **not assume a `DATABASE_URL`**. Saved exercises (the
+>   `/history` page) live in a private S3 bucket instead, via `backend/archive.py`:
+>   `role2-exercises-885232248320` (us-east-1; one gzipped JSON per exercise plus
+>   `index.json`; ~7 MB, well under a cent a month, nothing always-on). The bucket
+>   name is a code default (override with `EXERCISE_BUCKET`, empty = off), so no new
+>   env var is needed. The `r2ra-eb-ec2-role` instance role carries an inline policy,
+>   `role2-exercises-archive` (`s3:ListBucket` on the bucket, `s3:GetObject` +
+>   `s3:PutObject` on its objects). Old Railway rows are loaded with
+>   `python scripts/import_exercises.py exercises.json`.
 > - Gemini cost guards are built in with safe defaults and need **no** new env
 >   vars. They can optionally be tuned on the EB environment:
 >   `MAX_USD_PER_EXERCISE` (default 5), `MAX_USD_PER_DAY` (25, UTC day, then

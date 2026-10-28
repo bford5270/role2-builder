@@ -3,6 +3,7 @@ import os
 
 os.environ.pop("GEMINI_API_KEY", None)
 os.environ.pop("CORS_ORIGINS", None)
+os.environ["EXERCISE_BUCKET"] = ""  # tests must never reach AWS
 
 from fastapi.testclient import TestClient  # noqa: E402
 

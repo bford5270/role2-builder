@@ -5,6 +5,7 @@ import zipfile
 import threading
 import uuid
 from io import BytesIO
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,9 +25,9 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 try:
-    from backend import scenario, redteam, controller_docs
+    from backend import scenario, redteam, controller_docs, archive
 except ImportError:  # running from inside backend/
-    import scenario, redteam, controller_docs
+    import scenario, redteam, controller_docs, archive
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
@@ -1850,6 +1851,13 @@ def _run_generation(config: ExerciseConfig, job_id: str):
                 db.commit()
             finally:
                 db.close()
+        elif archive.enabled():
+            try:
+                archive.save(name=config.exercise_name, config=config.dict(), cases=cases, msel_data=schedule,
+                             warno_text=warno, annex_q_text=annex, medroe_text=medroe,
+                             road_to_war_text=road_to_war, fragos=fragos)
+            except Exception as e:  # never lose the generated package over an archive failure
+                print(f"WARNING: archiving exercise failed: {e}")
 
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -1916,6 +1924,11 @@ async def download_package(token: str):
 @app.get("/exercises")
 async def list_exercises():
     if not SessionLocal:
+        if archive.enabled():
+            try:
+                return {"exercises": archive.list_summaries()}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Archive error: {str(e)}")
         return {"exercises": []}
     db = SessionLocal()
     try:
@@ -1955,104 +1968,105 @@ async def list_exercises():
     finally:
         db.close()
 
+def _load_exercise(exercise_id: int):
+    """Fetch one saved exercise from whichever store is configured (database, else S3 archive)."""
+    if SessionLocal:
+        db = SessionLocal()
+        try:
+            e = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+            if not e:
+                raise HTTPException(status_code=404, detail="Not found")
+            return SimpleNamespace(id=e.id, name=e.name, created_at=e.created_at.isoformat() if e.created_at else None,
+                                   config=e.config, cases=e.cases, msel_data=e.msel_data, warno_text=e.warno_text,
+                                   annex_q_text=e.annex_q_text, medroe_text=e.medroe_text,
+                                   road_to_war_text=e.road_to_war_text, fragos=e.fragos)
+        finally:
+            db.close()
+    if archive.enabled():
+        try:
+            e = archive.get(exercise_id)
+        except Exception as ex:
+            raise HTTPException(status_code=500, detail=f"Archive error: {str(ex)}")
+        if not e:
+            raise HTTPException(status_code=404, detail="Not found")
+        return e
+    raise HTTPException(status_code=404, detail="DB not configured")
+
+
 @app.get("/exercises/{exercise_id}")
 async def get_exercise(exercise_id: int):
-    if not SessionLocal:
-        raise HTTPException(status_code=404, detail="DB not configured")
-    db = SessionLocal()
-    try:
-        ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
-        if not ex:
-            raise HTTPException(status_code=404, detail="Not found")
-        return {"id": ex.id, "name": ex.name, "created_at": ex.created_at.isoformat() if ex.created_at else None, "config": ex.config, "cases": ex.cases, "msel_data": ex.msel_data, "fragos": ex.fragos or []}
-    finally:
-        db.close()
+    ex = _load_exercise(exercise_id)
+    return {"id": ex.id, "name": ex.name, "created_at": ex.created_at, "config": ex.config, "cases": ex.cases, "msel_data": ex.msel_data, "fragos": ex.fragos or []}
 
 @app.get("/exercises/{exercise_id}/download")
 async def download_exercise(exercise_id: int):
-    if not SessionLocal:
-        raise HTTPException(status_code=404, detail="DB not configured")
-    db = SessionLocal()
-    try:
-        ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
-        if not ex:
-            raise HTTPException(status_code=404, detail="Not found")
+    ex = _load_exercise(exercise_id)
 
-        # Parse JSON if stored as string
-        config_data = ex.config
-        if isinstance(config_data, str):
-            config_data = json.loads(config_data)
-        config = ExerciseConfig(**config_data)
+    # Parse JSON if stored as string
+    config_data = ex.config
+    if isinstance(config_data, str):
+        config_data = json.loads(config_data)
+    config = ExerciseConfig(**config_data)
 
-        msel_data = ex.msel_data
-        if isinstance(msel_data, str):
-            msel_data = json.loads(msel_data)
+    msel_data = ex.msel_data
+    if isinstance(msel_data, str):
+        msel_data = json.loads(msel_data)
 
-        cases = ex.cases
-        if isinstance(cases, str):
-            cases = json.loads(cases)
+    cases = ex.cases
+    if isinstance(cases, str):
+        cases = json.loads(cases)
 
-        road_to_war = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
-        zip_buf = BytesIO()
-        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for fname, data in _package_files(config, msel_data, cases, ex.warno_text, ex.annex_q_text,
-                                              ex.medroe_text, road_to_war, getattr(ex, "fragos", None)):
-                zf.writestr(fname, data)
-        zip_buf.seek(0)
-        return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
-    finally:
-        db.close()
+    road_to_war = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
+    zip_buf = BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for fname, data in _package_files(config, msel_data, cases, ex.warno_text, ex.annex_q_text,
+                                          ex.medroe_text, road_to_war, getattr(ex, "fragos", None)):
+            zf.writestr(fname, data)
+    zip_buf.seek(0)
+    return Response(zip_buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{config.exercise_name}_Package.zip"'}, media_type='application/zip')
 
 @app.get("/exercises/{exercise_id}/document/{doc_type}")
 async def download_document(exercise_id: int, doc_type: str):
-    if not SessionLocal:
-        raise HTTPException(status_code=404, detail="DB not configured")
     if doc_type not in ["msel", "warno", "annex_q", "medroe", "case_book", "road_to_war", "fragos",
                         "controller_packet", "controller_vitals", "cases_json"]:
         raise HTTPException(status_code=400, detail="Invalid doc type")
     
-    db = SessionLocal()
-    try:
-        ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
-        if not ex:
-            raise HTTPException(status_code=404, detail="Not found")
+    ex = _load_exercise(exercise_id)
 
-        # Parse JSON if stored as string
-        config_data = ex.config
-        if isinstance(config_data, str):
-            config_data = json.loads(config_data)
-        config = ExerciseConfig(**config_data)
+    # Parse JSON if stored as string
+    config_data = ex.config
+    if isinstance(config_data, str):
+        config_data = json.loads(config_data)
+    config = ExerciseConfig(**config_data)
 
-        msel_data = ex.msel_data
-        if isinstance(msel_data, str):
-            msel_data = json.loads(msel_data)
+    msel_data = ex.msel_data
+    if isinstance(msel_data, str):
+        msel_data = json.loads(msel_data)
 
-        cases = ex.cases
-        if isinstance(cases, str):
-            cases = json.loads(cases)
+    cases = ex.cases
+    if isinstance(cases, str):
+        cases = json.loads(cases)
 
-        if doc_type == "msel":
-            buf, fn, mt = create_msel(msel_data, config), f"{config.exercise_name}_MSEL.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        elif doc_type == "warno":
-            buf, fn, mt = create_docx("WARNING ORDER", config.exercise_name.upper(), ex.warno_text), f"{config.exercise_name}_WARNO.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        elif doc_type == "annex_q":
-            buf, fn, mt = create_docx("ANNEX Q", f"TO OPORD {config.exercise_name.upper()}", ex.annex_q_text), f"{config.exercise_name}_Annex_Q.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        elif doc_type == "medroe":
-            buf, fn, mt = create_docx("MEDROE", config.exercise_name.upper(), ex.medroe_text), f"{config.exercise_name}_MEDROE.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        elif doc_type == "road_to_war":
-            rtw = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
-            buf, fn, mt = create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), rtw), f"{config.exercise_name}_Road_to_War_Prompt.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        elif doc_type == "fragos":
-            buf, fn, mt = create_docx("FRAGMENTARY ORDERS", f"TO OPORD {config.exercise_name.upper()}", scenario.fragos_text(ex.fragos or [], config.exercise_name)), f"{config.exercise_name}_FRAGOs.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        elif doc_type == "controller_packet":
-            buf, fn, mt = controller_docs.create_controller_packet(cases, msel_data, config, ex.fragos or []), f"{config.exercise_name}_Controller_Packet.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        elif doc_type == "controller_vitals":
-            buf, fn, mt = controller_docs.create_controller_vitals(cases, msel_data, config), f"{config.exercise_name}_Controller_Vitals.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        elif doc_type == "cases_json":
-            buf, fn, mt = BytesIO(json.dumps(_controller_export(config, msel_data, cases, ex.fragos)).encode()), f"{config.exercise_name}_cases.json", 'application/json'
-        else:
-            buf, fn, mt = create_case_book(cases, config), f"{config.exercise_name}_Case_Book.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        
-        return Response(buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{fn}"'}, media_type=mt)
-    finally:
-        db.close()
+    if doc_type == "msel":
+        buf, fn, mt = create_msel(msel_data, config), f"{config.exercise_name}_MSEL.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    elif doc_type == "warno":
+        buf, fn, mt = create_docx("WARNING ORDER", config.exercise_name.upper(), ex.warno_text), f"{config.exercise_name}_WARNO.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    elif doc_type == "annex_q":
+        buf, fn, mt = create_docx("ANNEX Q", f"TO OPORD {config.exercise_name.upper()}", ex.annex_q_text), f"{config.exercise_name}_Annex_Q.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    elif doc_type == "medroe":
+        buf, fn, mt = create_docx("MEDROE", config.exercise_name.upper(), ex.medroe_text), f"{config.exercise_name}_MEDROE.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    elif doc_type == "road_to_war":
+        rtw = getattr(ex, "road_to_war_text", None) or generate_road_to_war_prompt(config, ex.annex_q_text or "")
+        buf, fn, mt = create_docx("ROAD TO WAR — VIDEO PROMPT", config.exercise_name.upper(), rtw), f"{config.exercise_name}_Road_to_War_Prompt.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    elif doc_type == "fragos":
+        buf, fn, mt = create_docx("FRAGMENTARY ORDERS", f"TO OPORD {config.exercise_name.upper()}", scenario.fragos_text(ex.fragos or [], config.exercise_name)), f"{config.exercise_name}_FRAGOs.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    elif doc_type == "controller_packet":
+        buf, fn, mt = controller_docs.create_controller_packet(cases, msel_data, config, ex.fragos or []), f"{config.exercise_name}_Controller_Packet.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    elif doc_type == "controller_vitals":
+        buf, fn, mt = controller_docs.create_controller_vitals(cases, msel_data, config), f"{config.exercise_name}_Controller_Vitals.xlsx", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    elif doc_type == "cases_json":
+        buf, fn, mt = BytesIO(json.dumps(_controller_export(config, msel_data, cases, ex.fragos)).encode()), f"{config.exercise_name}_cases.json", 'application/json'
+    else:
+        buf, fn, mt = create_case_book(cases, config), f"{config.exercise_name}_Case_Book.docx", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    
+    return Response(buf.getvalue(), headers={'Content-Disposition': f'attachment; filename="{fn}"'}, media_type=mt)
