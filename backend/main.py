@@ -347,8 +347,14 @@ def _purge_stale_stores():
 _zap_lock = threading.Lock()
 _used_zaps: set = set()
 
+_ZAP_RESET_AT = 45000  # half of the 90,000-number space
+
 def _new_zap() -> str:
     with _zap_lock:
+        if len(_used_zaps) >= _ZAP_RESET_AT:
+            # Only uniqueness within one package matters. Reset instead of growing for the
+            # life of the process, and so the loop below can never run out of free numbers.
+            _used_zaps.clear()
         while True:
             z = str(random.randint(10000, 99999))
             if z not in _used_zaps:
