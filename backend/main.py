@@ -175,9 +175,14 @@ def get_client():
 
 class AIError(RuntimeError):
     """A classified Gemini failure, so callers and /health/ai can say what went wrong."""
-    def __init__(self, kind: str, detail: str = ""):
+    def __init__(self, kind: str, detail: str = "", cause: Optional[BaseException] = None):
         super().__init__(f"{kind}: {detail}" if detail else kind)
         self.kind, self.detail = kind, detail
+        # Safe-to-share fingerprints of the underlying failure (class name, HTTP code, Google's status enum).
+        # Never the message text, which can contain account details.
+        self.error_type = type(cause).__name__ if cause else None
+        self.http_code = getattr(cause, "code", None) if isinstance(getattr(cause, "code", None), int) else None
+        self.status = getattr(cause, "status", None) if isinstance(getattr(cause, "status", None), str) else None
 
 
 # What to tell the user when cases fall back to templates, by failure kind.
@@ -189,6 +194,7 @@ AI_KIND_TEXT = {
     "blocked": "the AI safety filter blocked the response",
     "truncated": "the AI response was cut off",
     "budget": "the exercise AI budget was reached",
+    "bad_request": "Google rejected the request (invalid parameters or unsupported location)",
 }
 
 def _classify_ai_error(e: Exception) -> str:
@@ -203,6 +209,8 @@ def _classify_ai_error(e: Exception) -> str:
             return "quota"
         if code in (408, 500, 502, 503, 504):
             return "unavailable"
+        if code == 400:
+            return "bad_request"
     if isinstance(e, (TimeoutError, ConnectionError)) or type(e).__name__ in (
             "ReadTimeout", "ConnectTimeout", "TimeoutException", "ConnectError", "RemoteProtocolError"):
         return "unavailable"
@@ -211,10 +219,12 @@ def _classify_ai_error(e: Exception) -> str:
 _ai_lock = threading.Lock()
 _ai_state: Dict[str, Any] = {"ok": None, "kind": None, "model": GEMINI_MODEL, "ts": None}
 
-def _note_ai(ok: bool, kind: Optional[str] = None) -> None:
+def _note_ai(ok: bool, kind: Optional[str] = None, err: Optional["AIError"] = None) -> None:
     """Remember the outcome of the latest real model call for /health/ai."""
     with _ai_lock:
-        _ai_state.update(ok=ok, kind=kind, model=_active_model, ts=datetime.utcnow().isoformat() + "Z")
+        _ai_state.update(ok=ok, kind=kind, model=_active_model, ts=datetime.utcnow().isoformat() + "Z",
+                         error_type=getattr(err, "error_type", None), http_code=getattr(err, "http_code", None),
+                         status=getattr(err, "status", None))
 
 def _discover_model() -> Optional[str]:
     """Newest stable Flash model this key can call (ids like gemini-2.5-flash, never -lite/-preview/-exp)."""
@@ -402,12 +412,12 @@ def _call_model(prompt: str, kind: str, system: Optional[str] = None, json_mode:
     except HTTPException:
         raise
     except AIError as e:
-        _note_ai(False, e.kind)
+        _note_ai(False, e.kind, e)
         raise
     except Exception as e:
-        kind = _classify_ai_error(e)
-        _note_ai(False, kind)
-        raise AIError(kind, str(e)[:200]) from e
+        err = AIError(_classify_ai_error(e), str(e)[:200], cause=e)
+        _note_ai(False, err.kind, err)
+        raise err from e
     _note_ai(True)
     u = getattr(response, "usage_metadata", None)
     tok_in = (getattr(u, "prompt_token_count", 0) or 0) if u else 0
@@ -1687,7 +1697,8 @@ def ai_health(request: Request, probe: bool = False):
         except HTTPException as e:  # e.g. GEMINI_API_KEY not set
             result["probe"] = {"ok": False, "kind": "no_key" if e.status_code == 503 else "other"}
         except AIError as e:
-            result["probe"] = {"ok": False, "kind": e.kind, "meaning": AI_KIND_TEXT.get(e.kind, "an AI error occurred")}
+            result["probe"] = {"ok": False, "kind": e.kind, "meaning": AI_KIND_TEXT.get(e.kind, "an AI error occurred"),
+                               "error_type": e.error_type, "http_code": e.http_code, "status": e.status}
         result["active_model"] = _active_model
     with _ai_lock:
         result["last_call"] = dict(_ai_state)

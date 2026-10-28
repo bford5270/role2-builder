@@ -50,7 +50,7 @@ def fake(monkeypatch):
     (_err(errors.ClientError, 404), "model_not_found"),
     (_err(errors.ClientError, 403), "auth_or_ip"),
     (_err(errors.ClientError, 400, "API key not valid"), "auth_or_ip"),
-    (_err(errors.ClientError, 400, "bad schema"), "other"),
+    (_err(errors.ClientError, 400, "bad schema"), "bad_request"),
     (_err(errors.ClientError, 429), "quota"),
     (_err(errors.ServerError, 503), "unavailable"),
     (TimeoutError("slow"), "unavailable"),
@@ -148,8 +148,23 @@ def test_health_ai_probe_reports_success_and_failure(fake):
         raise _err(errors.ClientError, 403, "IP address restriction")
     fake(behave)
     bad = TestClient(main.app).get("/health/ai?probe=1").json()
-    assert bad["probe"] == {"ok": False, "kind": "auth_or_ip", "meaning": main.AI_KIND_TEXT["auth_or_ip"]}
+    assert bad["probe"] == {"ok": False, "kind": "auth_or_ip", "meaning": main.AI_KIND_TEXT["auth_or_ip"],
+                            "error_type": "ClientError", "http_code": 403, "status": "X"}
     assert "IP address restriction" not in str(bad)  # error text from Google is never echoed to callers
+
+
+def test_probe_fingerprints_non_api_failures(fake):
+    """An unclassifiable error still says what class it was, so 'other' is diagnosable without logs."""
+    main._rate_hits.clear()
+
+    def behave(model):
+        raise RuntimeError("secret account detail")
+    fake(behave)
+    body = TestClient(main.app).get("/health/ai?probe=1").json()
+    assert body["probe"]["kind"] == "other" and body["probe"]["error_type"] == "RuntimeError"
+    assert body["probe"]["http_code"] is None
+    assert "secret account detail" not in str(body)
+    assert body["last_call"]["error_type"] == "RuntimeError"
 
 
 def test_health_ai_probe_is_rate_limited(fake):
