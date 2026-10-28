@@ -1928,7 +1928,8 @@ async def list_exercises():
             try:
                 return {"exercises": archive.list_summaries()}
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Archive error: {str(e)}")
+                print(f"Archive list failed: {e}")
+                raise HTTPException(status_code=500, detail="Archive unavailable")
         return {"exercises": []}
     db = SessionLocal()
     try:
@@ -1986,7 +1987,8 @@ def _load_exercise(exercise_id: int):
         try:
             e = archive.get(exercise_id)
         except Exception as ex:
-            raise HTTPException(status_code=500, detail=f"Archive error: {str(ex)}")
+            print(f"Archive get failed for exercise {exercise_id}: {ex}")
+            raise HTTPException(status_code=500, detail="Archive unavailable")
         if not e:
             raise HTTPException(status_code=404, detail="Not found")
         return e
