@@ -189,6 +189,7 @@ class AIError(RuntimeError):
 AI_KIND_TEXT = {
     "model_not_found": "the AI model is unavailable (retired or renamed)",
     "auth_or_ip": "the AI key was rejected (invalid, or blocked by its IP restriction)",
+    "billing": "the Google AI account is out of credit or at its spending cap — check billing for the API key's project",
     "quota": "the AI quota or rate limit was hit",
     "unavailable": "the AI service was unreachable or timed out",
     "blocked": "the AI safety filter blocked the response",
@@ -205,6 +206,8 @@ def _classify_ai_error(e: Exception) -> str:
             return "model_not_found"
         if code in (401, 403) or (code == 400 and "api key" in msg):
             return "auth_or_ip"
+        if code == 402:
+            return "billing"  # Google: prepaid credit used up or spending cap reached (status RESOURCE_EXHAUSTED)
         if code == 429:
             return "quota"
         if code in (408, 500, 502, 503, 504):

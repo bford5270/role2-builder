@@ -51,6 +51,7 @@ def fake(monkeypatch):
     (_err(errors.ClientError, 403), "auth_or_ip"),
     (_err(errors.ClientError, 400, "API key not valid"), "auth_or_ip"),
     (_err(errors.ClientError, 400, "bad schema"), "bad_request"),
+    (_err(errors.ClientError, 402, "credits depleted"), "billing"),
     (_err(errors.ClientError, 429), "quota"),
     (_err(errors.ServerError, 503), "unavailable"),
     (TimeoutError("slow"), "unavailable"),
