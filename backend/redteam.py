@@ -194,7 +194,10 @@ def _map(p: Dict) -> Optional[float]:
     return (p["sbp"] + 2 * p["dbp"]) / 3
 
 
-def check_vitals(ctrl: Dict) -> List[Dict]:
+def check_vitals(ctrl: Dict, case: Optional[Dict] = None) -> List[Dict]:
+    # The deterioration rules were written for resuscitation casualties. A mild or moderate casualty that is missed gets
+    # worse in smaller ways, so those findings are advisory (low) for them instead of forcing a template.
+    minor = (case or {}).get("severity") in ("mild", "moderate")
     out = []
     tracks = ctrl.get("vitals_tracks") or {}
     green, red = tracks.get("green") or [], tracks.get("red") or []
@@ -230,16 +233,16 @@ def check_vitals(ctrl: Dict) -> List[Dict]:
         m0, m1 = _map(red[0]), _map(red[-1])
         worse_avpu = _AVPU_RANK.get(str(red[-1].get("avpu", "A"))[:1], 0) > _AVPU_RANK.get(str(red[0].get("avpu", "A"))[:1], 0)
         if m0 is not None and m1 is not None and m1 >= m0 and not worse_avpu:
-            out.append(_f("high", "vitals", "vitals_tracks.red",
+            out.append(_f("low" if minor else "high", "vitals", "vitals_tracks.red",
                           "The red (missed-intervention) track does not deteriorate.",
                           "The red track should show falling MAP/SpO2 and falling mental status."))
         gm, rm = _map(green[-1]), _map(red[-1])
         if gm is not None and rm is not None and gm <= rm:
-            out.append(_f("medium", "vitals", "vitals_tracks",
+            out.append(_f("low" if minor else "medium", "vitals", "vitals_tracks",
                           "The green track ends no better than the red track.",
                           "Green should show a response to correct care."))
     elif ctrl.get("critical_actions"):
-        out.append(_f("high", "vitals", "vitals_tracks.red", "Critical actions exist but there is no red track.",
+        out.append(_f("low" if minor else "high", "vitals", "vitals_tracks.red", "Critical actions exist but there is no red track.",
                       "Add the deterioration course for a missed critical action."))
     # Shock recognition: shock index >1 at arrival demands a resuscitation action
     g0 = green[0]
@@ -391,7 +394,7 @@ def run_rules(ctrl: Dict, case: Dict) -> List[Dict]:
     for check in (check_laterality, check_gcs, check_thresholds, check_meds, check_vitals, check_handover,
                   check_trees, check_arrival_vitals):
         try:
-            findings += check(ctrl, case) if check in (check_laterality, check_arrival_vitals) else check(ctrl)
+            findings += check(ctrl, case) if check in (check_laterality, check_arrival_vitals, check_vitals) else check(ctrl)
         except Exception as e:  # a broken check must never sink a package
             findings.append(_f("low", "checker", check.__name__, f"Check failed to run: {e}", "Review manually."))
     findings += check_structure(ctrl, case)

@@ -270,6 +270,9 @@ RULES
   difference in the handover summary. The case book prints CASE.arrival_vitals as the patient's arrival
   vitals, so green t=0 must start there (HR, BP, RR, SpO2, GCS) and the track must develop from them.
 - Each critical action gives the window in minutes before the red track starts, and how to rejoin green.
+- Keep the layer proportionate to CASE.severity. For a mild or moderate casualty build a short tree
+  (assessment, treatment, disposition), one or two critical actions, and a red track that shows the realistic
+  consequence of a miss (a missed injury, pain, delayed disposition), which may be modest but must still worsen.
 - Meds on the turnover card use realistic TCCC/JTS doses (TXA 2 g IV; calcium per CPG) with minutes-prior.
 - Only include a burns block when the injuries involve burns.
 - Every wound needs anatomic region, side (L, R, midline, bilateral), surface (anterior or posterior), type,
@@ -335,6 +338,7 @@ def _case_brief(case: Dict) -> Dict:
     arrival = {k: trend[0].get(k) for k in ("hr", "bp", "rr", "spo2", "gcs")} if trend and isinstance(trend[0], dict) else None
     return {
         "arrival_vitals": arrival,
+        "severity": case.get("severity"),
         "population": case.get("patient_population"),
         "night_arrival": case.get("arrival_window") == "night",
         "title": (case.get("meta") or {}).get("title"),

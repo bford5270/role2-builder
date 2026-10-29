@@ -46,8 +46,9 @@ def _fake_llm(prompt, system):
         assert "GCS" in prompt.split("RULES FINDINGS TO FIX:\n", 1)[1].split("CONTROLLER LAYER")[0]
         return json.dumps({"ok": False, "findings": [{"category": "gcs", "location": "moulage", "issue": "sum"}],
                            "patch": {"moulage": "Alert, GCS 15 (E4, V5, M6)"}})
+    # Mild casualties skip the expert review, so the planted error is fixed by the single targeted revision instead.
     CALLS["revise"] += 1
-    raise AssertionError("revision should not be needed when the review fixes everything")
+    return json.dumps({"moulage": "Alert, GCS 15 (E4, V5, M6)"})
 
 
 def test_chain_follows_fragos():
@@ -117,8 +118,9 @@ def test_full_package(monkeypatch, ai):
             assert ctrl["moulage"] == "Alert, GCS 15 (E4, V5, M6)"  # planted error fixed, not reported
         else:
             assert ctrl["quality"]["source"] == "template"
-    if ai:  # cost: exactly one generation + one review per layer, no rework loop
-        assert CALLS == {"controller": 10, "review": 10, "revise": 0}
+    if ai:  # cost: one generation per layer, then one review (or, for a mild casualty, one targeted revision); no rework loop
+        mild = sum(1 for c in export["cases"] if c["case"].get("severity") == "mild")
+        assert CALLS == {"controller": 10, "review": 10 - mild, "revise": mild}
 
 
 def test_unfixable_layer_falls_back_to_template_after_two_calls():

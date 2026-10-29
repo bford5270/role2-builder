@@ -55,6 +55,10 @@ literature says most Role 2 casualties are mild or moderate, so the realistic de
 | `evac_exponent` (how steeply evacuation falls with access) | 1 | 1.5 | 2.2 | **provisional** |
 | `rtd_mild` | 0.5 | 0.7 | 0.9 | **provisional** |
 | `rtd_moderate` | 0.1 | 0.25 | 0.4 | **provisional** |
+| `hold_hours` (time held at Role 2; doctrine plans up to 72 h) | 6 | 24 | 72 | **provisional** (min x1.5 when evacuation access is below 0.5) |
+| `rtd_observation_hours` (before return to duty) | 1 | 3 | 6 | **provisional** |
+| `evac_wait_hours` (times 1 minus evacuation access) | 2 | 6 | 12 | **provisional** |
+| `dow_hours` (time to death; expectant casualties x1.5) | 0.5 | 2 | 6 | **provisional** |
 | `civilian_share` (when authorized) | 0.12 | 0.213 | 0.3 | Kotwal 2018 |
 | `partner_share` | 0.08 | 0.2 | 0.41 | **provisional** (ceiling from Kotwal 2018) |
 | `enemy_share_detainee_day` (of a Detainee Ops day) | 0.06 | 0.12 | 0.2 | **provisional** |
@@ -87,6 +91,23 @@ One policy is written into the MEDROE prompt **and** drives the patient mix.
 - Authorized means "some" (about 21% civilians, more on humanitarian days; about 12% of a Detainee Ops day as enemy/EPW, at least one).
 - Not authorized means **one or two** across the whole exercise (an emergency-stabilization walk-in), and none in exercises under 4 patients.
 - Night Ops: the same 35% share the scheduler puts in its night wave; those cases are written for night arrival and fill that wave.
+
+## Time in Role 2 follows the outcome
+
+The schedule used to give every casualty 45, 90 or 150 minutes in Role 2 by surgery phase alone. Now a held casualty stays for the drawn
+`hold_hours` (never more than 72 h), a returned-to-duty casualty adds an observation period, a casualty awaiting evacuation waits longer the
+scarcer evacuation is, and a death or expectant case takes its own time. The Role 2 census (and so the PACE saturation triggers) counts
+across days, so a casualty held overnight is still there the next day.
+
+## Found by the first real-Gemini smoke test (10 cases, 42 calls, about $0.67)
+
+- Cases and decision trees that fall back to a template are now **marked** (`generation: "template"`, `generation_error`) and the history
+  page says so, with the error type. Google's error text is never stored.
+- The red-team rules assumed every casualty deteriorates when an action is missed, which forced mild casualties into templates after
+  wasted review calls. For mild and moderate casualties those findings are advisory, the controller prompt asks for a proportionate layer,
+  and the AI expert review is **skipped for mild casualties** (the free rules still run; `AI_REVIEW_MILD=1` reviews every case).
+- Observed cost was about $0.067 per case, so the default $5 per-exercise cap covers roughly 75 cases. Larger exercises finish the remaining
+  cases as templates (the job message says so). Raise `MAX_USD_PER_EXERCISE` if that is not wanted.
 
 ## Needs clinician review
 

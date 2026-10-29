@@ -16,6 +16,9 @@ export default function SetupPage() {
   const [threatLevel, setThreatLevel] = useState("Peer/Near-Peer");
   const [region, setRegion] = useState("Indo-Pacific");
   const [highAcuity, setHighAcuity] = useState(false);
+  type CareChoice = 'auto' | 'on' | 'off';
+  const [enemyCare, setEnemyCare] = useState<CareChoice>('auto');
+  const [civilianCare, setCivilianCare] = useState<CareChoice>('auto');
 
   // MET selection
   const [selectedMETs, setSelectedMETs] = useState<string[]>([]);
@@ -339,6 +342,9 @@ export default function SetupPage() {
       selected_footprint: selectedFootprint,
       specialists,
       casualty_acuity: highAcuity ? 'high' : 'realistic',
+      // null = derive from the days (Detainee Ops; Humanitarian or Stability)
+      treat_enemy_combatants: enemyCare === 'auto' ? null : enemyCare === 'on',
+      treat_civilians: civilianCare === 'auto' ? null : civilianCare === 'on',
     };
     localStorage.setItem('exerciseConfig', JSON.stringify(config));
     window.location.href = '/tactical';
@@ -620,6 +626,45 @@ export default function SetupPage() {
             <strong>On:</strong> about two to three times as many critical and severe casualties, for surgical and resuscitation
             training. This changes the severity mix only, not how many patients arrive. Threat level, tactical settings and
             mass-casualty events still shift the mix on top of it.
+          </p>
+        </div>
+
+        {/* Who the exercise treats beyond friendly forces */}
+        <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-md)', padding: 12, marginTop: 12 }}>
+          <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 10 }}>
+            Who the exercise treats
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label style={labelStyle}>Enemy combatants / detainees (EPW)</label>
+              <select
+                value={enemyCare}
+                onChange={(e) => setEnemyCare(e.target.value as CareChoice)}
+                style={inputStyle}
+              >
+                <option value="auto">Automatic (on when a day has Detainee Ops)</option>
+                <option value="on">Authorized: some enemy casualties</option>
+                <option value="off">Not authorized: one or two at most</option>
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Host-nation civilians</label>
+              <select
+                value={civilianCare}
+                onChange={(e) => setCivilianCare(e.target.value as CareChoice)}
+                style={inputStyle}
+              >
+                <option value="auto">Automatic (on for Humanitarian or Stability days)</option>
+                <option value="on">Authorized: some civilian casualties</option>
+                <option value="off">Not authorized: one or two at most</option>
+              </select>
+            </div>
+          </div>
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-3)', marginTop: 8, marginBottom: 0, lineHeight: 1.5 }}>
+            The MEDROE and the casualty mix both follow this setting, so they always agree. <strong>Authorized</strong> means a
+            meaningful share of casualties (about one in five for civilians; about one in eight of a Detainee Ops day for enemy
+            combatants). <strong>Not authorized</strong> means only one or two walk-in cases across the whole exercise, handled
+            as emergency stabilization.
           </p>
         </div>
       </section>

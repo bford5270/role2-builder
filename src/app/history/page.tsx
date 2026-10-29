@@ -29,6 +29,9 @@ interface CaseRow {
   injuries: string;
   population?: string | null;
   night?: boolean;
+  severity?: string | null;
+  template?: boolean;
+  tree_template?: boolean;
 }
 
 interface CaseDetail {
@@ -299,9 +302,16 @@ function CasePanel({ exerciseId }: { exerciseId: number }) {
               <span className="min-w-0">
                 <span className="block text-sm text-ink-1">{r.title || 'Untitled case'}</span>
                 <span className="block text-xs text-ink-3 truncate">
-                  {[r.zap && `ZAP ${r.zap}`, r.disposition, r.specialty, r.population && POPULATION_LABEL[r.population],
+                  {[r.zap && `ZAP ${r.zap}`, r.severity && `${r.severity[0].toUpperCase()}${r.severity.slice(1)}`, r.disposition,
+                    r.specialty, r.population && POPULATION_LABEL[r.population],
                     r.night && 'Night arrival'].filter(Boolean).join(' · ')}
                 </span>
+                {(r.template || r.tree_template) && (
+                  <span className="block text-xs text-signal-amber mt-0.5">
+                    {r.template ? 'Template case (AI generation failed)' : 'Template decision tree'}
+                    {r.template && r.tree_template ? ' · template decision tree' : ''}
+                  </span>
+                )}
                 {openIndex !== r.index && r.mechanism && (
                   <span className="block text-xs text-ink-2 mt-0.5">{r.mechanism}</span>
                 )}

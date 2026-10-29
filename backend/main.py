@@ -158,6 +158,9 @@ GEMINI_ATTEMPTS = int(os.getenv("GEMINI_ATTEMPTS", "3"))
 # Simulated combat-casualty content trips Gemini's default safety filters; relax them (as /generate-name
 # already did). Set GEMINI_RELAX_SAFETY=0 to use Google's defaults.
 GEMINI_RELAX_SAFETY = os.getenv("GEMINI_RELAX_SAFETY", "1") != "0"
+# The AI expert-review call is skipped for mild casualties (the free rules still run): it costs a call per case and adds
+# little for a minor injury. Set AI_REVIEW_MILD=1 to review every case.
+REVIEW_MILD = os.getenv("AI_REVIEW_MILD", "0") == "1"
 
 def get_client():
     global _client
@@ -552,7 +555,8 @@ DNBI_BY_ENVIRONMENT = {
     "Urban": ["Crush injury", "Smoke inhalation", "MSK overuse", "CO poisoning"],
     "Mountain": ["HAPE", "HACE", "Acute mountain sickness", "Fall with fractures"],
     "Littoral": ["Near-drowning", "Jellyfish envenomation", "Coral cuts with infection", "Heat exhaustion"],
-    "General": ["Combat stress reaction", "Dental emergency", "Acute appendicitis", "Kidney stones", "Pneumonia", "Gastroenteritis"]
+    "General": ["Combat stress reaction", "Dental emergency", "Acute appendicitis", "Kidney stones", "Pneumonia", "Gastroenteritis",
+                "Acute asthma exacerbation", "Moderate dehydration with vomiting", "Ankle sprain with possible fracture"]
 }
 
 TRAUMA_BY_ETIOLOGY = {
@@ -627,7 +631,10 @@ _ETIOLOGY_LESS_SEVERE = {
     "UAS/Drone Strike": (["Small fragment wounds to the extremities without vascular injury", "Blast TBI, moderate", "Extremity wounds with a tourniquet already applied"],
                          ["Superficial fragment wounds", "Acoustic trauma", "Concussion"]),
 }
-TRAUMA_TIERS = {e: {"serious": TRAUMA_BY_ETIOLOGY[e], "moderate": mod, "mild": mild}
+# An eye injury is sight-threatening and evacuated, not life-threatening: it belongs with the moderate casualties.
+_EYE = "penetrating eye"
+TRAUMA_TIERS = {e: {"serious": [c for c in TRAUMA_BY_ETIOLOGY[e] if _EYE not in c.lower()],
+                    "moderate": mod + [c for c in TRAUMA_BY_ETIOLOGY[e] if _EYE in c.lower()], "mild": mild}
                 for e, (mod, mild) in _ETIOLOGY_LESS_SEVERE.items() if e in TRAUMA_BY_ETIOLOGY}
 
 _DNBI_SERIOUS_KW = ("hemorrhagic", "heat stroke", "hape", "hace", "hypothermia", "near-drowning", "decompression", "crush",
@@ -648,7 +655,8 @@ def dnbi_tier(case_type: str) -> str:
 _NOT_DCS_DESPITE_SURGICAL_WORDS = ("penetrating eye", "hemorrhagic fever")
 # Added to the surgical list: any penetrating torso/neck/face/fragment injury, junctional hemorrhage, severe burns.
 # PROVISIONAL: clinician review requested (see docs/case-mix-assumptions.md).
-_SURGICAL_KW_EXTRA = ["penetrating", "junctional", "fragment wounds", "severe burns"]
+_SURGICAL_KW_EXTRA = ["penetrating", "junctional", "fragment wounds", "severe burns", "artery injury", "arterial injury",
+                      "multi-system"]
 
 def determine_case_phases(case_type: str, mechanism: str, is_mascal: bool = False, severity: Optional[str] = None) -> List[str]:
     if severity in ("mild", "moderate"):
@@ -1231,15 +1239,14 @@ def annotate_pace_states(schedule: List[Dict], config) -> None:
         "evac corridor": _evac_corridor_pace(config),
         "staff (single surgical team)": _staff_pace_floor(config),
     }
-    by_day: Dict[int, List[Dict]] = {}
-    for r in schedule:
-        if "arr_raw" in r:
-            by_day.setdefault(r["day"], []).append(r)
+    loaded = [r for r in schedule if "arr_raw" in r]
+
+    def at(row: Dict, key: str) -> int:  # absolute minute, so a casualty held overnight still counts the next day
+        return (row["day"] - 1) * 24 * 60 + row[key]
     for r in schedule:
         if "arr_raw" not in r:  # CBRN/detainee inject rows carry no clinical load
             continue
-        census = sum(1 for o in by_day.get(r["day"], [])
-                     if o["arr_raw"] <= r["arr_raw"] < o["cleared_raw"])
+        census = sum(1 for o in loaded if at(o, "arr_raw") <= at(r, "arr_raw") < at(o, "cleared_raw"))
         sigs = dict(base_sigs)
         sigs["blood/WBB"] = _blood_pace(r.get("blood_source", ""), r.get("blood_cum", 0))
         if census > capacity:  # MASCAL / patient load exceeds throughput
@@ -1300,7 +1307,7 @@ def _case_teo(case: Dict, is_mascal_wave: bool = False) -> Dict:
         "debrief": " • ".join(case.get("debrief_questions", []) or []),
     }
 
-def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]]) -> tuple:
+def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]], draw: Optional[Dict] = None) -> tuple:
     """Build the MSEL timeline, drawing each slot's case from the pool it was
     generated for: (day_number, is_mascal) -> cases. This keeps MASCAL-etiology
     cases inside that day's MASCAL wave (a UAS-strike case never fills a
@@ -1388,6 +1395,11 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
                     event = "Routine"
 
                 teo = _case_teo(case, is_mascal_wave)
+                if draw:  # time in Role 2 follows the assigned outcome (hold, return to duty, wait for evacuation, death)
+                    zap = int(re.sub(r"\D", "", str((case.get("zmist") or {}).get("zap", ""))) or 0)
+                    teo["r2_dwell"] = casemix.dwell_minutes(case.get("disposition", ""), teo["r2_dwell"],
+                                                            casemix.evac_access(config, day), draw["params"],
+                                                            random.Random(draw["seed"] * 31 + zap))
                 # Timeline: point of injury (golden-hour anchor) back from arrival
                 # by the parameter-driven transit; Role 2 cleared = arrival + dwell.
                 transit = _transit_min(teo["evac_precedence"], config)
@@ -1957,7 +1969,12 @@ def _generate_one(task: tuple, environment: str, region: str, mets: Optional[Lis
         print(f"WARNING: case generation failed ({case_type}): {e} — using offline fallback")
         case = _enforce_profile(create_fallback_case(case_type, mech, is_trauma), profile)
         # Truthy marker that also records why, so the job message can say what went wrong.
-        case["_fallback"] = getattr(e, "kind", None) or ("budget" if isinstance(e, BudgetExceeded) else "other")
+        kind = getattr(e, "kind", None) or ("budget" if isinstance(e, BudgetExceeded) else "other")
+        case["_fallback"] = kind
+        # Persisted so the history page can say which cases are templates and why. A Google error contributes only its kind,
+        # never its text (which can carry account details); anything else is our own error, safe to keep.
+        case["generation"] = "template"
+        case["generation_error"] = kind if isinstance(e, AIError) else f"{type(e).__name__}: {str(e)[:160]}"
         return case
 
 # In-memory job store — always used as primary, DB synced as best-effort
@@ -2036,8 +2053,9 @@ def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases
             return redteam.finalize(template(), case, fallback=template, source="template")
         # One expert review-and-repair call; one targeted revision only if the
         # rules still fail; template last. At most 3 model calls per layer.
+        skip_review = case.get("severity") == "mild" and not REVIEW_MILD
         return redteam.finalize(first, case,
-                                review=lambda c, f: scenario.review_controller(c, case, f, _llm_json),
+                                review=None if skip_review else (lambda c, f: scenario.review_controller(c, case, f, _llm_json)),
                                 revise=lambda c, f: scenario.revise_controller(c, f, _llm_json),
                                 fallback=template)
 
@@ -2139,6 +2157,10 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         if fallback_count:
             top = max(set(fallback_reasons), key=fallback_reasons.count)
             fallback_why = AI_KIND_TEXT.get(top, "an AI error occurred")
+            if top == "other":
+                errs = [c.get("generation_error", "").split(":")[0] for c in cases if c.get("generation")]
+                if errs:
+                    fallback_why += f" ({max(set(errs), key=errs.count)})"
             print(f"WARNING: {fallback_count}/{total} cases used the offline fallback ({top})")
         _job_update(job_id, progress="Generating documents...", completed=total)
 
@@ -2150,7 +2172,7 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         for p in case_pools.values():
             random.shuffle(p)
 
-        schedule, cases = generate_schedule(config, case_pools)
+        schedule, cases = generate_schedule(config, case_pools, draw)
 
         # Care chain + FRAGOs → per-case decision trees, vitals tracks, red team.
         fragos = scenario.generate_fragos(config)
@@ -2363,6 +2385,8 @@ async def list_exercise_cases(exercise_id: int):
             "triage": c.get("triage_category"), "disposition": c.get("disposition"),
             "specialty": meta.get("target_specialty"), "duration": meta.get("estimated_duration"),
             "population": c.get("patient_population"), "night": c.get("arrival_window") == "night",
+            "severity": c.get("severity"), "template": c.get("generation") == "template",
+            "tree_template": _obj(_obj(c.get("controller")).get("quality")).get("source") == "template",
             "mechanism": _clip(zmist.get("mechanism"), 220), "injuries": _clip(zmist.get("injuries"), 160),
         })
     return {"id": ex.id, "name": ex.name, "cases": rows}

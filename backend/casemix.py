@@ -63,6 +63,12 @@ PARAMS: Dict[str, Tuple[float, float, float, str]] = {
     "evac_exponent": (1.0, 1.5, 2.2, "provisional"),
     "rtd_mild": (0.50, 0.70, 0.90, "provisional"),
     "rtd_moderate": (0.10, 0.25, 0.40, "provisional"),
+    # --- time in Role 2 by outcome, in hours. Doctrine plans Role 2 / prolonged-care holding for up to 72 h; nothing published
+    # gives a distribution, so these are provisional and bounded widely.
+    "hold_hours": (6.0, 24.0, 72.0, "provisional"),
+    "rtd_observation_hours": (1.0, 3.0, 6.0, "provisional"),
+    "evac_wait_hours": (2.0, 6.0, 12.0, "provisional"),   # times (1 - evacuation access)
+    "dow_hours": (0.5, 2.0, 6.0, "provisional"),
     # --- who is treated (kotwal2018: 21.3% civilian/other, 37.4% US, 37.3% Afghan forces, 4.0% non-US coalition)
     "civilian_share": (0.12, 0.213, 0.30, "kotwal2018"),
     "partner_share": (0.08, 0.20, 0.41, "provisional"),            # ceiling from kotwal2018: Afghan forces + non-US coalition = 41%
@@ -70,7 +76,8 @@ PARAMS: Dict[str, Tuple[float, float, float, str]] = {
     "enemy_share_other": (0.04, 0.08, 0.12, "provisional"),
 }
 
-NOT_A_PROBABILITY = {"delay_mortality_slope", "evac_exponent"}  # every other parameter is a 0-1 share or rate
+NOT_A_PROBABILITY = {"delay_mortality_slope", "evac_exponent", "hold_hours", "rtd_observation_hours",
+                     "evac_wait_hours", "dow_hours"}  # every other parameter is a 0-1 share or rate
 
 # Severity -> triage. Provisional: the share of "severe" casualties sorted T1 vs T2, and so on.
 SEVERITY_TO_TRIAGE = {
@@ -190,6 +197,8 @@ SCALE = {
     "serious_share.mascal": lambda s: _mul(_mul(_threat(s, (1.0, 1.15), (1.0, 1.10)),
                                                 (1.0, 1.20) if BLAST_FAMILY & set(s["etiologies"]) else (0.90, 1.0)), _acuity(s)),
     "serious_share.dnbi": _acuity,
+    # Where evacuation is badly contested, held casualties stay longer.
+    "hold_hours": lambda s: (1.5, 1.0) if s["min_access"] < 0.5 else (1.0, 1.0),
     "expectant_given_critical": lambda s: (1.0, 2.0) if s["threat"] in ("peer", "hybrid") else (1.0, 1.0),
     "civilian_share": lambda s: (1.0, 1.4) if s["humanitarian"] else (1.0, 1.0),
 }
@@ -341,6 +350,23 @@ def assign_profiles(tasks: List[tuple], config, draw: Dict, rng: Optional[random
     for prof in profiles:
         prof.setdefault("night", False)
     return profiles
+
+
+def dwell_minutes(disposition: str, base: int, access: float, p: Dict[str, float], rng: random.Random) -> int:
+    """Minutes a casualty occupies Role 2, given the assigned outcome. `base` is the treatment time the schedule already
+    allowed (45, 90 or 150 minutes by surgery phase); holds, observation, waiting for evacuation and death add to it."""
+    jitter = rng.uniform(0.6, 1.4)
+    if disposition == "Hold at Role 2":
+        return max(base, int(60 * min(72.0, p["hold_hours"] * jitter)))
+    if disposition == "RTD":
+        return base + int(60 * p["rtd_observation_hours"] * jitter)
+    if disposition == "Evac to Role 3":
+        return base + int(60 * (0.5 + p["evac_wait_hours"] * max(0.0, 1.0 - access) * jitter))
+    if disposition == "Died of Wounds":
+        return max(base, int(60 * p["dow_hours"] * jitter))
+    if disposition == "Expectant":
+        return int(60 * p["dow_hours"] * jitter * 1.5)  # comfort care while resources go to others
+    return base
 
 
 def summarize(profiles: List[Dict]) -> Dict:
