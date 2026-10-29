@@ -11,9 +11,10 @@ import re
 from typing import Callable, Dict, List, Optional
 
 try:
-    from backend import redteam
+    from backend import redteam, jsonfix
 except ImportError:  # running from inside backend/
     import redteam
+    import jsonfix
 
 # --- Care chain ------------------------------------------------------------
 # A chain is an ordered list of nodes; a leg is the care delivered at one node
@@ -270,6 +271,9 @@ RULES
   difference in the handover summary. The case book prints CASE.arrival_vitals as the patient's arrival
   vitals, so green t=0 must start there (HR, BP, RR, SpO2, GCS) and the track must develop from them.
 - Each critical action gives the window in minutes before the red track starts, and how to rejoin green.
+- SITUATION AT ARRIVAL (when given) is the exercise's real state: Role 2 census, whole blood on hand and the orders in force.
+  Decisions in the tree (resuscitation intensity, blood product choice, hold versus evacuate, expectant management) must
+  reflect it, and the tree may cite the order (MEDROE or Annex Q) that governs a decision.
 - Keep the layer proportionate to CASE.severity. For a mild or moderate casualty build a short tree
   (assessment, treatment, disposition), one or two critical actions, and a red track that shows the realistic
   consequence of a miss (a missed injury, pain, delayed disposition), which may be modest but must still worsen.
@@ -353,7 +357,7 @@ def _case_brief(case: Dict) -> Dict:
 
 
 def controller_prompt(case: Dict, chain: Dict, pathway: str, fragos_in_force: List[Dict],
-                      is_maritime: bool) -> str:
+                      is_maritime: bool, situation: str = "") -> str:
     legs = [{"leg_id": l["id"], "title": l["title"], "capability": l["capability"], "focus": l["focus"]}
             for l in chain["legs"]]
     focus = next((l["id"] for l in chain["legs"] if l["focus"]), chain["legs"][0]["id"])
@@ -367,6 +371,7 @@ def controller_prompt(case: Dict, chain: Dict, pathway: str, fragos_in_force: Li
         + (f"FRAGOs IN FORCE: {frago_lines}\n" if frago_lines else "")
         + ("SETTING: afloat/amphibious — include elevation changes, platform stability, access and comms with "
            "air crew/pilots/higher in considerations where relevant.\n" if is_maritime else "")
+        + situation
         + "Generate the controller layer JSON now."
     )
 
@@ -379,13 +384,7 @@ each a full leg object with its exact "leg_id"]. Leave out everything you did no
 
 
 def _parse_json(text: str) -> Dict:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        s, e = text.find("{"), text.rfind("}") + 1
-        if s != -1 and e > s:
-            return json.loads(text[s:e])
-        raise
+    return jsonfix.loads_lenient(text)
 
 
 _VITAL_KEYS = ("t", "hr", "sbp", "dbp", "rr", "spo2", "temp_f", "etco2", "gcs_e", "gcs_v", "gcs_m")
@@ -444,8 +443,8 @@ def normalize_controller(ctrl: Dict, chain: Dict, pathway: str) -> Dict:
 
 
 def generate_controller(case: Dict, chain: Dict, pathway: str, fragos_in_force: List[Dict],
-                        is_maritime: bool, llm: Callable[[str, str], str]) -> Dict:
-    text = llm(controller_prompt(case, chain, pathway, fragos_in_force, is_maritime), CONTROLLER_SYSTEM_PROMPT)
+                        is_maritime: bool, llm: Callable[[str, str], str], situation: str = "") -> Dict:
+    text = llm(controller_prompt(case, chain, pathway, fragos_in_force, is_maritime, situation), CONTROLLER_SYSTEM_PROMPT)
     return normalize_controller(_parse_json(text), chain, pathway)
 
 

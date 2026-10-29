@@ -85,9 +85,9 @@ def test_pathway_respects_capability():
 @pytest.mark.parametrize("ai", [True, False])
 def test_full_package(monkeypatch, ai):
     monkeypatch.setattr(main, "generate_case_sync", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
-    monkeypatch.setattr(main, "generate_warno", lambda c, f=None: "WARNO text")
-    monkeypatch.setattr(main, "generate_annex_q", lambda c, f=None: "Annex text")
-    monkeypatch.setattr(main, "generate_medroe", lambda c: "MEDROE text")
+    monkeypatch.setattr(main, "generate_warno", lambda c, f=None, load="": "WARNO text")
+    monkeypatch.setattr(main, "generate_annex_q", lambda c, f=None, load="": "Annex text")
+    monkeypatch.setattr(main, "generate_medroe", lambda c, load="": "MEDROE text")
     monkeypatch.setattr(main, "generate_road_to_war_prompt", lambda c, a="": "RTW text")
     for k in CALLS:
         CALLS[k] = 0

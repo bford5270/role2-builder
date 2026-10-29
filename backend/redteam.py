@@ -7,6 +7,10 @@ LLM critic pass. Findings are dicts:
      "issue": str, "fix": str, "source": "rules|ai"}
 """
 import json
+try:
+    from backend import jsonfix
+except ImportError:  # running from inside backend/
+    import jsonfix
 import re
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -438,10 +442,9 @@ _PATCHABLE = ("wounds", "moulage", "critical_decisions", "critical_actions", "vi
 
 def _parse(text: str) -> Dict:
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        s, e = text.find("{"), text.rfind("}") + 1
-        return json.loads(text[s:e]) if s != -1 and e > s else {}
+        return jsonfix.loads_lenient(text)
+    except ValueError:
+        return {}
 
 
 def apply_patch(ctrl: Dict, patch: Dict) -> Dict:

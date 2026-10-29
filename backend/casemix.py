@@ -24,6 +24,7 @@ DISPOSITION = ("RTD", "Evac to Role 3", "Hold at Role 2", "Died of Wounds", "Exp
 SEVERITIES = ("critical", "severe", "moderate", "mild")
 POPULATIONS = ("us", "partner", "civilian", "enemy")
 HUMANITARIAN = {"Humanitarian Assistance", "Stability Operations"}
+HOLD_LIMIT_HOURS = 72   # doctrine: Role 2 / prolonged-care holding is planned for up to 72 h; the orders state it
 NIGHT_SHARE = 0.35  # must match generate_schedule's night wave (round(total_patients * 0.35))
 BLAST_FAMILY = {"IED/Blast", "VBIED", "UAS/Drone Strike", "Indirect Fire/Mortar"}
 
@@ -101,9 +102,10 @@ _SETTING_ACCESS = {
 POPULATION_PROMPT = {
     "us": "a US service member",
     "partner": "a partner-force soldier",
-    "civilian": "a host-nation civilian (non-combatant); apply the civilian-care provisions of the MEDROE",
-    "enemy": ("an enemy combatant held as a detainee/EPW; apply the detainee-care provisions of the MEDROE and "
-              "make 9-line line 8 show enemy/detainee status"),
+    "civilian": ("a host-nation civilian (non-combatant); apply the civilian-care provisions of the MEDROE: treat by clinical "
+                 "need, then transfer or hand over to host-nation care when stable"),
+    "enemy": ("an enemy combatant held as a detainee/EPW; apply the detainee-care provisions of the MEDROE: treat by clinical need, "
+              "custody and security stay with the guard force, status is documented; make 9-line line 8 show enemy/detainee status"),
 }
 SEVERITY_PROMPT = {
     "critical": "critical: life-threatening and resuscitation-dependent, with high mortality even with prompt care",
@@ -357,7 +359,7 @@ def dwell_minutes(disposition: str, base: int, access: float, p: Dict[str, float
     allowed (45, 90 or 150 minutes by surgery phase); holds, observation, waiting for evacuation and death add to it."""
     jitter = rng.uniform(0.6, 1.4)
     if disposition == "Hold at Role 2":
-        return max(base, int(60 * min(72.0, p["hold_hours"] * jitter)))
+        return max(base, int(60 * min(float(HOLD_LIMIT_HOURS), p["hold_hours"] * jitter)))
     if disposition == "RTD":
         return base + int(60 * p["rtd_observation_hours"] * jitter)
     if disposition == "Evac to Role 3":

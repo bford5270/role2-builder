@@ -27,9 +27,9 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 try:
-    from backend import scenario, redteam, controller_docs, archive, casemix
+    from backend import scenario, redteam, controller_docs, archive, casemix, jsonfix
 except ImportError:  # running from inside backend/
-    import scenario, redteam, controller_docs, archive, casemix
+    import scenario, redteam, controller_docs, archive, casemix, jsonfix
 
 app = FastAPI(title="Role 2 Exercise Builder API")
 
@@ -758,6 +758,27 @@ JSON STRUCTURE:
   "debrief_questions": ["String"]
 }"""
 
+def _orders_prompt(profile: Dict, facts: Optional[Dict]) -> str:
+    """The provisions of this exercise's MEDROE and Annex Q that bear on this casualty, so the care in the case follows them."""
+    if not facts:
+        return ""
+    e = facts["evac_min"]
+    lines = ["ORDERS IN FORCE: the exercise's MEDROE and Annex Q govern the care. Where it is clinically natural, show the team "
+             "applying them and name the provision they are using."]
+    if profile["disposition"] == "Hold at Role 2":
+        lines.append(f"- Holding limit {facts['hold_limit_h']} h (MEDROE): plan reassessments and a disposition before it.")
+    if profile["severity"] in ("critical", "severe"):
+        lines.append(f"- Blood (Annex Q): {facts['ltowb']} units of LTOWB at the Role 2 at the start; the walking blood bank activates once "
+                     "stock is exhausted. Show product choice and transfusion decisions under that constraint.")
+    if profile["triage"] == "Expectant":
+        lines.append("- MEDROE expectant policy: comfort care, reassess as resources allow, no resuscitation resources diverted.")
+    if profile["disposition"] == "Died of Wounds":
+        lines.append("- MEDROE died-of-wounds procedures: pronouncement, documentation and handling of remains.")
+    if profile["disposition"] == "Evac to Role 3":
+        lines.append(f"- Evacuation to Role 3 is requested by precedence (Annex Q): Urgent {e['Urgent']} min, Priority {e['Priority']} min, "
+                     f"Routine {e['Routine']} min from the point of injury under this threat posture.")
+    return "\n".join(lines) + "\n"
+
 def _profile_prompt(profile: Optional[Dict], ctx: Optional[Dict]) -> str:
     """Requirements assigned in code (see casemix.py) that the model must write the case around."""
     if not profile:
@@ -768,6 +789,7 @@ def _profile_prompt(profile: Optional[Dict], ctx: Optional[Dict]) -> str:
             if access < 0.5 else "onward evacuation to Role 3 is contested and limited" if access < 0.8
             else "onward evacuation to Role 3 is available")
     return (
+        _orders_prompt(profile, ctx.get("facts")) +
         f"ASSIGNED SEVERITY: {casemix.SEVERITY_PROMPT[profile['severity']]}.\n"
         f"ASSIGNED TRIAGE: {profile['triage']}. Write an injury pattern and physiology that genuinely fit this "
         f"category; triage_category must be exactly \"{profile['triage']}\".\n"
@@ -789,6 +811,12 @@ def _enforce_profile(data: Dict, profile: Optional[Dict]) -> Dict:
         data["disposition"] = profile["disposition"]
         data["patient_population"] = profile["population"]
         data["severity"] = profile["severity"]
+        if profile["triage"] == "T1":  # a T1 is called in as Urgent, whatever the model wrote
+            ev = data.get("evacuation")
+            if not isinstance(ev, dict):
+                ev = data["evacuation"] = {}
+            if "urgent" not in str(ev.get("priority", "")).lower():
+                ev["priority"] = "Urgent"
         if profile.get("night"):
             data["arrival_window"] = "night"
     return data
@@ -823,21 +851,20 @@ def generate_case_sync(case_type: str, mechanism: str, environment: str, region:
         f"Generate the case now."
     )
 
-    response = _call_model(prompt, "case", system=CASE_SYSTEM_PROMPT, json_mode=True)
-
-    def _enforce_zap(data: Dict) -> Dict:
-        if "zmist" in data:
-            data["zmist"]["zap"] = zap
-        return _enforce_profile(data, profile)
-
-    try:
-        return _enforce_zap(json.loads(response.text))
-    except json.JSONDecodeError:
-        text = response.text
-        start, end = text.find('{'), text.rfind('}') + 1
-        if start != -1 and end > start:
-            return _enforce_zap(json.loads(text[start:end]))
-        raise
+    data = None
+    for attempt in (1, 2):
+        response = _call_model(prompt, "case", system=CASE_SYSTEM_PROMPT, json_mode=True)
+        try:
+            data = jsonfix.loads_lenient(response.text)
+            if isinstance(data, dict):
+                break
+            raise ValueError("case JSON is not an object")
+        except (ValueError, TypeError):  # still broken after repair: ask once more before falling back to a template
+            if attempt == 2:
+                raise
+    if isinstance(data.get("zmist"), dict):
+        data["zmist"]["zap"] = zap
+    return _enforce_profile(data, profile)
 
 def create_fallback_case(case_type: str, mechanism: str, is_trauma: bool = True) -> Dict:
     return {
@@ -870,7 +897,53 @@ def _care_chain_block(config: ExerciseConfig, fragos: Optional[List[Dict]]) -> s
             "note that the listed FRAGOs will modify them:\n"
             + scenario.chain_summary(config, fragos, _transit_min("Priority", config)) + "\n")
 
-def generate_warno(config: ExerciseConfig, fragos: Optional[List[Dict]] = None) -> str:
+def _planning_facts(config: ExerciseConfig) -> Dict:
+    """Numbers the schedule is built on. One source for the WARNO, Annex Q, MEDROE, the case prompts and the tree prompts,
+    so the documents cannot contradict each other or the exercise."""
+    return {"evac_min": {lvl: _transit_min(lvl, config) for lvl in ("Urgent", "Priority", "Routine")},
+            "hold_limit_h": casemix.HOLD_LIMIT_HOURS, "ltowb": STARTING_LTOWB_UNITS}
+
+def _facts_text(f: Dict) -> str:
+    e = f["evac_min"]
+    return ("PLANNING FACTORS (authoritative: every order must state these exactly and must not contradict them):\n"
+            f"- Evacuation precedence, point of injury to Role 2 under this threat posture: Urgent {e['Urgent']} min, "
+            f"Priority {e['Priority']} min, Routine {e['Routine']} min.\n"
+            f"- Role 2 holding limit: {f['hold_limit_h']} hours, then evacuate, return to duty, or manage as expectant / died of wounds.\n"
+            f"- Blood: {f['ltowb']} units LTOWB at the Role 2 at the start; the walking blood bank activates once stock is exhausted.\n"
+            "- Expectant casualties receive comfort care and are reassessed as resources allow; deaths follow the MEDROE died-of-wounds procedures.")
+
+def _schedule_facts(schedule: List[Dict], cases: List[Dict], config: ExerciseConfig) -> str:
+    """What the finished schedule actually asks of the Role 2, written into the orders so they plan for the real load."""
+    rows = [r for r in schedule if "arr_raw" in r]
+    if not rows:
+        return ""
+    count = lambda key: {k: sum(1 for c in cases if c.get(key) == k) for k in sorted({c.get(key) for c in cases if c.get(key)})}
+    peak = max(rows, key=lambda r: r.get("r2_census", 0))
+    held = [int(r.get("r2_dwell") or 0) for r, c in zip(rows, cases) if c.get("disposition") == "Hold at Role 2"]
+    serious_blood = sum(int(r.get("blood_units") or 0) for r in rows)
+    wbb = next((r for r in rows if r.get("blood_source") == "Walking Blood Bank"), None)
+    mascal = [r for r in rows if str(r.get("event", "")).startswith("MASCAL")]
+    lines = ["EXERCISE LOAD (from the schedule these orders accompany; plan for these numbers):",
+             f"- {len(rows)} casualties. Outcomes: {count('disposition')}. Severity: {count('severity')}.",
+             f"- Peak Role 2 census {peak.get('r2_census')} (day {peak['day']}, {peak['time']}) against a planning capacity of {_r2_capacity(config)}.",
+             (f"- {len(held)} casualties are held at Role 2; the longest hold is {max(held) / 60:.0f} hours." if held else "- No casualty is held at Role 2."),
+             f"- Whole blood: {serious_blood} units drawn in total; " + (f"the LTOWB stock is exhausted at day {wbb['day']} {wbb['time']} and the walking blood bank is in use from then." if wbb else "the LTOWB stock is not exhausted."),
+             f"- Night arrivals: {sum(1 for c in cases if c.get('arrival_window') == 'night')}."]
+    if mascal:
+        lines.append(f"- Mass-casualty surge: {len(mascal)} casualties beginning day {mascal[0]['day']} {mascal[0]['time']}.")
+    pop = count("patient_population")
+    lines.append(f"- Patients by population: {pop}.")
+    return "\n".join(lines) + "\n"
+
+def _situation_text(row: Dict, config: ExerciseConfig) -> str:
+    """The Role 2's real state when this casualty arrives, for the decision-tree prompt."""
+    before = int(row.get("blood_on_hand") or 0) + int(row.get("blood_units") or 0)
+    blood = f"{before} units LTOWB" if before > 0 else "none (LTOWB exhausted, walking blood bank)"
+    return (f"SITUATION AT ARRIVAL: Role 2 census {row.get('r2_census')} of a planning capacity of {_r2_capacity(config)}; PACE state "
+            f"{row.get('pace_state')} ({row.get('pace_driver')}); whole blood on hand {blood}; holding limit {casemix.HOLD_LIMIT_HOURS} h; "
+            "expectant casualties get comfort care per the MEDROE.\n")
+
+def generate_warno(config: ExerciseConfig, fragos: Optional[List[Dict]] = None, load: str = "") -> str:
     prompt = f"""Generate USMC WARNO (5-paragraph order) for:
 Exercise: {config.exercise_name}, Duration: {config.duration} days
 Unit: {config.supported_unit}, Environment: {config.environment}, Region: {config.region}
@@ -878,12 +951,14 @@ Threat: {config.threat_level}, Footprint: {', '.join(config.selected_footprint)}
 Days: {'; '.join([f"Day {d.day_number}: {d.tactical_setting}, {_day_patients(d)} cas, {'MASCAL '+d.mascal_etiology if d.mascal else 'No MASCAL'}, {'CBRN' if d.cbrn else ''}, {'Night' if d.night_ops else 'Day'}" for d in config.days])}
 
 {_care_chain_block(config, fragos)}
+{_facts_text(_planning_facts(config))}
+{load}
 Include: 1.SITUATION 2.MISSION 3.EXECUTION 4.ADMIN/LOG 5.CMD/SIG"""
     
     response = _call_model(prompt, "orders")
     return response.text
 
-def generate_annex_q(config: ExerciseConfig, fragos: Optional[List[Dict]] = None) -> str:
+def generate_annex_q(config: ExerciseConfig, fragos: Optional[List[Dict]] = None, load: str = "") -> str:
     total_cas = sum(_day_patients(d) for d in config.days)
     # Feed the annex the same planning factors the MSEL timeline is built on so
     # the published document can't contradict the schedule it accompanies.
@@ -896,9 +971,8 @@ Threat: {config.threat_level}
 Total Casualties: {total_cas} across {config.duration} days, Footprint: {', '.join(config.selected_footprint)}
 Specialists: {json.dumps(config.specialists)}
 
-Ground the annex in these exercise planning factors — the document must stay consistent with them:
-- Blood: {STARTING_LTOWB_UNITS} units LTOWB on hand at the Role 2 at exercise start; walking blood bank activates once stock is exhausted.
-- Modeled POI-to-Role 2 evacuation timelines under the {config.threat_level} threat posture: Urgent ~{urgent_t} min, Priority ~{priority_t} min, Routine ~{routine_t} min.
+{_facts_text(_planning_facts(config))}
+{load}
 {_care_chain_block(config, fragos)}
 Structure per JP 4-02 / MCWP conventions:
 1. SITUATION — medical threat assessment incl. expected DNBI for {config.environment} terrain
@@ -913,7 +987,7 @@ Structure per JP 4-02 / MCWP conventions:
     response = _call_model(prompt, "orders")
     return response.text
 
-def generate_medroe(config: ExerciseConfig) -> str:
+def generate_medroe(config: ExerciseConfig, load: str = "") -> str:
     has_cbrn = any(d.cbrn for d in config.days)
     has_detainee = any(d.detainee_ops for d in config.days)
 
@@ -921,6 +995,8 @@ def generate_medroe(config: ExerciseConfig) -> str:
 Exercise: {config.exercise_name}, Environment: {config.environment}, Threat: {config.threat_level}
 CBRN play: {has_cbrn}, Detainee Ops: {has_detainee}
 {casemix.policy_text(casemix.care_policy(config))}
+{_facts_text(_planning_facts(config))}
+{load}
 
 Include:
 - Eligibility and treatment priorities, stating the ELIGIBILITY POLICY above exactly: US forces, partner forces, host-nation civilians, detainee/EPW — care rendered by clinical need per the Geneva Conventions
@@ -1124,28 +1200,46 @@ _MT_KW = ("amputation", "junctional", "evisceration", "hemothorax", "haemothorax
           "vascular", "splenic", "hepatic", "aortic", "pelvic fracture",
           "exsanguination", "penetrating abdominal", "penetrating torso", "penetrating chest")
 
+_EXPLICIT_BLEEDING_KW = ("hemorrhage", "haemorrhage", "bleeding", "hemothorax", "haemothorax", "vascular", "splenic", "hepatic",
+                       "aortic", "exsanguination")
+_NEGATED = re.compile(r"\b(no|not|without|denies|negative for|absence of|ruled out)\b[^.;:]{0,45}?"
+                      r"(hemorrhag\w*|haemorrhag\w*|bleeding|hemothorax|haemothorax|amputation|vascular)", re.I)
+
 def _case_text(case: Dict) -> str:
     z = case.get("zmist", {})
-    return f"{z.get('injuries','')} {z.get('mechanism','')} {z.get('treatment','')}".lower()
+    text = f"{z.get('injuries','')} {z.get('mechanism','')} {z.get('treatment','')}"
+    return _NEGATED.sub(" ", text).lower()  # "no active hemorrhage" must not read as hemorrhage
 
 def _requires_blood(case: Dict) -> bool:
-    """A casualty needs blood if it goes to surgery, is T1, or its injuries
-    describe hemorrhage. Derived from the case, never rolled."""
+    """A casualty needs blood if it goes to surgery, is critical or severe, or its injuries describe hemorrhage. Severity
+    leads: a mild casualty never draws blood. Derived from the case, never rolled."""
+    sev = case.get("severity")
+    if sev == "mild":
+        return False
     if case.get("phases", {}).get("dcs") is not None:
         return True
-    if case.get("triage_category") == "T1":
+    if sev in ("critical", "severe"):
         return True
-    return any(k in _case_text(case) for k in _HEMORRHAGE_KW)
+    if sev is None and case.get("triage_category") == "T1":
+        return True
+    text = _case_text(case)
+    if sev == "moderate":  # an injury name alone ("stable pelvic fracture") is not bleeding: it needs explicit evidence
+        return any(k in text for k in _EXPLICIT_BLEEDING_KW)
+    return any(k in text for k in _HEMORRHAGE_KW)
 
 def _blood_tier(case: Dict) -> str:
     """Classify transfusion severity from case clinical facts."""
     if not _requires_blood(case):
         return "none"
     text = _case_text(case)
-    if any(k in text for k in _UMT_KW):
-        return "ultramassive"
+    sev = case.get("severity")
     surgical = case.get("phases", {}).get("dcs") is not None
-    if surgical or case.get("triage_category") == "T1" or any(k in text for k in _MT_KW):
+    major = any(k in text for k in _MT_KW)
+    if any(k in text for k in _UMT_KW) and major and sev in (None, "critical"):
+        return "ultramassive"  # e.g. bilateral amputation: needs both a multiplicity word and a major-hemorrhage term
+    if sev == "moderate":
+        return "submassive"
+    if sev == "critical" or surgical or major or (sev is None and case.get("triage_category") == "T1"):
         return "massive"
     return "submassive"
 
@@ -1402,7 +1496,7 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
                                                             random.Random(draw["seed"] * 31 + zap))
                 # Timeline: point of injury (golden-hour anchor) back from arrival
                 # by the parameter-driven transit; Role 2 cleared = arrival + dwell.
-                transit = _transit_min(teo["evac_precedence"], config)
+                transit = _transit_min(teo["evac_precedence"], config) if inbound else 10  # a walk-in has no MEDEVAC leg
                 poi_time = _clock(arr_total - transit)
                 cleared_raw = arr_total + teo["r2_dwell"]
                 cleared = _clock(cleared_raw)
@@ -1443,6 +1537,15 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
                 })
                 ordered_cases.append(case)
 
+    # A Detainee/EPW inject is the day's first enemy-combatant case, not a separate event hours away from it.
+    case_rows = [r for r in schedule if str(r.get("case_num", "")).startswith("Case ")]
+    for inj in (r for r in schedule if r.get("event") == "INJECT"):
+        for row in case_rows:
+            n = int(row["case_num"].split()[1])
+            if row["day"] == inj["day"] and ordered_cases[n - 1].get("patient_population") == "enemy":
+                inj["time"] = row["time"]
+                inj["brief_description"] += f" (Case {n})"
+                break
     annotate_pace_states(schedule, config)
     return schedule, ordered_cases
 
@@ -1974,7 +2077,10 @@ def _generate_one(task: tuple, environment: str, region: str, mets: Optional[Lis
         # Persisted so the history page can say which cases are templates and why. A Google error contributes only its kind,
         # never its text (which can carry account details); anything else is our own error, safe to keep.
         case["generation"] = "template"
-        case["generation_error"] = kind if isinstance(e, AIError) else f"{type(e).__name__}: {str(e)[:160]}"
+        if isinstance(e, AIError):
+            case["generation_error"] = kind + (f" [{e.error_type} {e.http_code} {e.status}]" if e.error_type else "")
+        else:
+            case["generation_error"] = f"{type(e).__name__}: {str(e)[:160]}"
         return case
 
 # In-memory job store — always used as primary, DB synced as best-effort
@@ -2047,7 +2153,8 @@ def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases
         maritime = scenario._is_maritime(config, day)
         template = lambda: scenario.fallback_controller(case, chain, pathway)
         try:
-            first = scenario.generate_controller(case, chain, pathway, in_force, maritime, _llm_json)
+            first = scenario.generate_controller(case, chain, pathway, in_force, maritime, _llm_json,
+                                                 _situation_text(row, config))
         except Exception as e:
             print(f"WARNING: controller layer generation failed (case {i + 1}): {e} — using template")
             return redteam.finalize(template(), case, fallback=template, source="template")
@@ -2131,8 +2238,9 @@ def _run_generation(config: ExerciseConfig, job_id: str):
         total = len(tasks)
         profiles = casemix.assign_profiles(tasks, config, draw)
         days_by_no = {d.day_number: d for d in config.days}
-        ctxs = [{"setting": days_by_no[t[0]].tactical_setting if t[0] in days_by_no else "", "threat": config.threat_level}
-                for t in tasks]
+        facts = _planning_facts(config)
+        ctxs = [{"setting": days_by_no[t[0]].tactical_setting if t[0] in days_by_no else "", "threat": config.threat_level,
+                 "facts": facts} for t in tasks]
         print(f"Case mix for '{config.exercise_name}' (seed {draw['seed']}): {casemix.summarize(profiles)}; "
               f"care policy {casemix.care_policy(config)}")
         budget = _Budget(max_calls=MAX_CALLS_PER_CASE * total, max_usd=MAX_USD_PER_EXERCISE)
@@ -2184,9 +2292,10 @@ def _run_generation(config: ExerciseConfig, job_id: str):
 
         _job_update(job_id, progress="Generating orders...")
         with ThreadPoolExecutor(max_workers=3) as pool:
-            f_warno = pool.submit(_bound(budget, generate_warno), config, fragos)
-            f_annex = pool.submit(_bound(budget, generate_annex_q), config, fragos)
-            f_medroe = pool.submit(_bound(budget, generate_medroe), config)
+            load = _schedule_facts(schedule, cases, config)  # the orders plan for the load the schedule actually carries
+            f_warno = pool.submit(_bound(budget, generate_warno), config, fragos, load)
+            f_annex = pool.submit(_bound(budget, generate_annex_q), config, fragos, load)
+            f_medroe = pool.submit(_bound(budget, generate_medroe), config, load)
             warno = f_warno.result()
             annex = f_annex.result()
             medroe = f_medroe.result()
