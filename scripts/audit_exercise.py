@@ -168,7 +168,7 @@ def audit_orders(config, cases, msel, docs):
     for lvl in sorted(set(tm) & set(ta)):
         if tm[lvl] != ta[lvl]:
             add(HIGH, "orders", f"the MEDROE and Annex Q disagree on {lvl} evacuation: {tm[lvl]} min vs {ta[lvl]} min")
-    hold = lambda t: [int(x) for x in re.findall(r"(?:maximum|max\.?|up to)[^\n]{0,40}?(\d+)\s*hours", t, re.I)]
+    hold = lambda t: [int(x) for x in re.findall(r"(?:maximum|max\.?|up to)[^\n]{0,90}?(\d+)\s*\**\s*hours", t, re.I)]
     hm, ha = hold(medroe), hold(annex)
     longest = max((int(r.get("r2_dwell") or 0) for r in msel if "arr_raw" in r), default=0) / 60
     if hm and ha and set(hm) != set(ha):

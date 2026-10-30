@@ -1493,7 +1493,7 @@ def generate_schedule(config: ExerciseConfig, case_pools: Dict[tuple, List[Dict]
                     zap = int(re.sub(r"\D", "", str((case.get("zmist") or {}).get("zap", ""))) or 0)
                     teo["r2_dwell"] = casemix.dwell_minutes(case.get("disposition", ""), teo["r2_dwell"],
                                                             casemix.evac_access(config, day), draw["params"],
-                                                            random.Random(draw["seed"] * 31 + zap))
+                                                            random.Random(draw["seed"] * 31 + zap), case.get("severity"))
                 # Timeline: point of injury (golden-hour anchor) back from arrival
                 # by the parameter-driven transit; Role 2 cleared = arrival + dwell.
                 transit = _transit_min(teo["evac_precedence"], config) if inbound else 10  # a walk-in has no MEDEVAC leg
@@ -2157,7 +2157,8 @@ def _build_controller_layers(config: ExerciseConfig, schedule: List[Dict], cases
                                                  _situation_text(row, config))
         except Exception as e:
             print(f"WARNING: controller layer generation failed (case {i + 1}): {e} — using template")
-            return redteam.finalize(template(), case, fallback=template, source="template")
+            return redteam.finalize(template(), case, fallback=template, source="template",
+                                    reason=f"generation failed: {type(e).__name__}")
         # One expert review-and-repair call; one targeted revision only if the
         # rules still fail; template last. At most 3 model calls per layer.
         skip_review = case.get("severity") == "mild" and not REVIEW_MILD
@@ -2496,6 +2497,7 @@ async def list_exercise_cases(exercise_id: int):
             "population": c.get("patient_population"), "night": c.get("arrival_window") == "night",
             "severity": c.get("severity"), "template": c.get("generation") == "template",
             "tree_template": _obj(_obj(c.get("controller")).get("quality")).get("source") == "template",
+            "tree_reason": _obj(_obj(c.get("controller")).get("quality")).get("reason"),
             "mechanism": _clip(zmist.get("mechanism"), 220), "injuries": _clip(zmist.get("injuries"), 160),
         })
     return {"id": ex.id, "name": ex.name, "cases": rows}

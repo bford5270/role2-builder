@@ -354,14 +354,17 @@ def assign_profiles(tasks: List[tuple], config, draw: Dict, rng: Optional[random
     return profiles
 
 
-def dwell_minutes(disposition: str, base: int, access: float, p: Dict[str, float], rng: random.Random) -> int:
+def dwell_minutes(disposition: str, base: int, access: float, p: Dict[str, float], rng: random.Random,
+                  severity: Optional[str] = None) -> int:
     """Minutes a casualty occupies Role 2, given the assigned outcome. `base` is the treatment time the schedule already
     allowed (45, 90 or 150 minutes by surgery phase); holds, observation, waiting for evacuation and death add to it."""
     jitter = rng.uniform(0.6, 1.4)
+    if severity == "mild":
+        base = min(base, 45)  # a minor injury is treated and released: no resuscitation or surgery time
     if disposition == "Hold at Role 2":
         return max(base, int(60 * min(float(HOLD_LIMIT_HOURS), p["hold_hours"] * jitter)))
     if disposition == "RTD":
-        return base + int(60 * p["rtd_observation_hours"] * jitter)
+        return base + int(60 * p["rtd_observation_hours"] * (0.4 if severity == "mild" else 1.0) * jitter)
     if disposition == "Evac to Role 3":
         return base + int(60 * (0.5 + p["evac_wait_hours"] * max(0.0, 1.0 - access) * jitter))
     if disposition == "Died of Wounds":

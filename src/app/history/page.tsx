@@ -32,6 +32,7 @@ interface CaseRow {
   severity?: string | null;
   template?: boolean;
   tree_template?: boolean;
+  tree_reason?: string | null;
 }
 
 interface CaseDetail {
@@ -310,6 +311,7 @@ function CasePanel({ exerciseId }: { exerciseId: number }) {
                   <span className="block text-xs text-signal-amber mt-0.5">
                     {r.template ? 'Template case (AI generation failed)' : 'Template decision tree'}
                     {r.template && r.tree_template ? ' · template decision tree' : ''}
+                    {r.tree_template && r.tree_reason ? ` (${r.tree_reason})` : ''}
                   </span>
                 )}
                 {openIndex !== r.index && r.mechanism && (

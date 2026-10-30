@@ -202,6 +202,8 @@ def check_vitals(ctrl: Dict, case: Optional[Dict] = None) -> List[Dict]:
     # The deterioration rules were written for resuscitation casualties. A mild or moderate casualty that is missed gets
     # worse in smaller ways, so those findings are advisory (low) for them instead of forcing a template.
     minor = (case or {}).get("severity") in ("mild", "moderate")
+    # A casualty who dies or is triaged expectant is not expected to recover with correct care either.
+    unsalvageable = (case or {}).get("disposition") in ("Died of Wounds", "Expectant") or (case or {}).get("triage_category") == "Expectant"
     out = []
     tracks = ctrl.get("vitals_tracks") or {}
     green, red = tracks.get("green") or [], tracks.get("red") or []
@@ -242,7 +244,7 @@ def check_vitals(ctrl: Dict, case: Optional[Dict] = None) -> List[Dict]:
                           "The red track should show falling MAP/SpO2 and falling mental status."))
         gm, rm = _map(green[-1]), _map(red[-1])
         if gm is not None and rm is not None and gm <= rm:
-            out.append(_f("low" if minor else "medium", "vitals", "vitals_tracks",
+            out.append(_f("low" if (minor or unsalvageable) else "medium", "vitals", "vitals_tracks",
                           "The green track ends no better than the red track.",
                           "Green should show a response to correct care."))
     elif ctrl.get("critical_actions"):
@@ -536,7 +538,7 @@ def finalize(ctrl: Dict, case: Dict,
              review: Optional[Callable[[Dict, List[Dict]], Dict]] = None,
              revise: Optional[Callable[[Dict, List[Dict]], Dict]] = None,
              fallback: Optional[Callable[[], Dict]] = None,
-             source: str = "ai") -> Dict:
+             source: str = "ai", reason: str = "") -> Dict:
     """Red-team a controller layer and FIX it so the case ships as a final
     draft, spending at most two model calls:
 
@@ -567,13 +569,16 @@ def finalize(ctrl: Dict, case: Dict,
     if not left:
         cur.pop("_fallback", None)
         cur["quality"] = {"source": source, "rounds": rounds}
+        if reason:
+            cur["quality"]["reason"] = reason  # e.g. the AI layer was never generated, so the template is all there is
         return cur
     if fallback is None:
         raise ValueError("controller layer could not be made clean and no template was given")
+    why = reason or "; ".join(f"{f['category']}: {f['issue']}"[:110] for f in left[:3])  # what blocked the AI layer
     cur = autofix(fallback(), case)
     cur.pop("_fallback", None)
     left = _blocking(run_rules(cur, case))
     if left:
         print(f"WARNING: template still has {len(left)} rules finding(s): {[f['issue'] for f in left]}")
-    cur["quality"] = {"source": "template", "rounds": rounds}
+    cur["quality"] = {"source": "template", "rounds": rounds, "reason": why}
     return cur
